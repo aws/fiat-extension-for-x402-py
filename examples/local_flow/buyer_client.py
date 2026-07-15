@@ -90,7 +90,7 @@ def _pay_and_fetch(client: AgentPayClient, path: str) -> None:
 
     data = paid.json()
     print(f"  [buyer] resource: {data['message']}  (paidBy={data['data']['paidBy']})")
-    print(f"          secret:   {data['data']['secret']}")
+    print(f"          content:  {data['data']['content']}")
 
 
 def main() -> None:

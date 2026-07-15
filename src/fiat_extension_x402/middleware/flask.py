@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -27,6 +28,8 @@ from fiat_extension_x402.builders.resource_server_builder import (
 from fiat_extension_x402.exceptions import ValidationError
 from fiat_extension_x402.middleware.types import AgentPayRouteConfig, PaymentInfo
 from fiat_extension_x402.signers.protocol import ServiceAgentPaySigner
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -322,11 +325,9 @@ def agent_pay_middleware(config: AgentPayMiddlewareConfig) -> Callable[[Flask], 
             except Exception as exc:
                 if config.on_error:
                     return config.on_error(exc, request)
-                return _send_error(
-                    500,
-                    "Internal server error",
-                    str(exc) if str(exc) else "Unknown error",
-                )
+                # Log the details server-side; never echo them to the client.
+                _logger.exception("Unhandled error while processing payment")
+                return _send_error(500, "Internal server error")
 
         @app.after_request
         def _agent_pay_after_request(response: Response) -> Response:

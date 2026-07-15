@@ -146,7 +146,7 @@ def _handle(path: str) -> Response:
         {
             "message": f"Hello from {path}!",
             "data": {
-                "secret": f"This is protected content at {path}",
+                "content": f"This is protected content at {path}",
                 "paidBy": result.payer,
             },
         }
