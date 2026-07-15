@@ -2,7 +2,7 @@
 
 **Package:** `fiat-extension-for-x402`
 **Module:** `fiat_extension_x402`
-**Runtime:** Python ≥ 3.9
+**Runtime:** Python ≥ 3.10
 
 This guide explains how the SDK works conceptually. For task-oriented quickstarts, see the
 [README](../README.md); for the request/response sequence, see

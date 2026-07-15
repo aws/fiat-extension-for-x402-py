@@ -29,7 +29,7 @@ pip install "fiat-extension-for-x402[fastapi]"   # FastAPI middleware
 pip install "fiat-extension-for-x402[flask]"      # Flask middleware
 ```
 
-Requires Python 3.9+.
+Requires Python 3.10+.
 
 ---
 
