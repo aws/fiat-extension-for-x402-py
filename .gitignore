@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+
+# IDE
+.idea/
+
+# Local development notes
+*-INTERNAL.md
+.plan-*.md
+.env
