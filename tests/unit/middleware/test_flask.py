@@ -130,6 +130,38 @@ class TestAgentPayMiddlewareRouteMatching:
         assert resp.headers.get("WWW-Authenticate", "").startswith("x402 ")
         assert "PAYMENT-REQUIRED" in resp.headers
 
+    def test_402_body_is_a_valid_x402_v2_payment_required(self) -> None:
+        """The advertised version must match the body's actual shape.
+
+        The requirements carry ``amount`` (v2), not ``maxAmountRequired`` +
+        ``resource`` (v1), so the body has to declare v2 — a buyer parses it with
+        the model the version names, and x402 core dispatches v1 and v2 through
+        separate registries.
+        """
+        import base64
+
+        from x402.schemas import PaymentRequired
+
+        app = Flask(__name__)
+        init = agent_pay_middleware(_make_config())
+        init(app)
+
+        @app.get("/api/premium")
+        def premium() -> str:
+            return "premium"
+
+        resp = app.test_client().get("/api/premium")
+        body = json.loads(resp.data)
+
+        assert body["x402Version"] == 2
+        parsed = PaymentRequired.model_validate(body)
+        assert parsed.accepts[0].scheme == "agent-pay"
+        assert parsed.accepts[0].extra["quoteToken"]
+
+        assert resp.headers["WWW-Authenticate"].startswith("x402 version=2,")
+        blob = resp.headers["PAYMENT-REQUIRED"]
+        assert json.loads(base64.b64decode(blob))["x402Version"] == 2
+
     def test_method_mismatch_passes_through(self) -> None:
         app = Flask(__name__)
         init = agent_pay_middleware(_make_config())
@@ -559,3 +591,25 @@ class TestRunAsync:
 
         result = asyncio.run(_caller())
         assert result == "hello"
+
+
+class TestResourceMetadataShape:
+    def test_402_nests_resource_metadata(self) -> None:
+        """x402 tooling reads url/description/mimeType from `resource`."""
+        from x402.schemas import PaymentRequired
+
+        app = Flask(__name__)
+        init = agent_pay_middleware(_make_config())
+        init(app)
+
+        @app.get("/api/premium")
+        def premium() -> str:
+            return "premium"
+
+        body = json.loads(app.test_client().get("/api/premium").data)
+
+        assert "url" not in body, "resource metadata must not be flattened onto the body"
+        parsed = PaymentRequired.model_validate(body)
+        assert parsed.resource is not None
+        assert parsed.resource.url.endswith("/api/premium")
+        assert parsed.resource.mime_type == "application/json"

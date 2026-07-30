@@ -221,14 +221,19 @@ def agent_pay_fastapi_middleware(
                         },
                     )
 
+                    # x402 nests resource metadata under `resource`; stock x402
+                    # tooling reads it from there and silently sees nothing if
+                    # these fields are flattened onto the body.
                     payment_required = {
-                        "x402Version": 1,
+                        "x402Version": 2,
                         "accepts": [requirements],
-                        "url": f"{config.service_url}{request.url.path}",
-                        "description": (
-                            route_config.description or f"Access to {request.url.path}"
-                        ),
-                        "mimeType": route_config.mime_type or "application/json",
+                        "resource": {
+                            "url": f"{config.service_url}{request.url.path}",
+                            "description": (
+                                route_config.description or f"Access to {request.url.path}"
+                            ),
+                            "mimeType": route_config.mime_type or "application/json",
+                        },
                     }
 
                     accepts_base64 = base64.b64encode(
@@ -239,7 +244,7 @@ def agent_pay_fastapi_middleware(
                         content=payment_required,
                         status_code=402,
                         headers={
-                            "WWW-Authenticate": (f'x402 version=1, accepts="{accepts_base64}"'),
+                            "WWW-Authenticate": (f'x402 version=2, accepts="{accepts_base64}"'),
                             "PAYMENT-REQUIRED": accepts_base64,
                         },
                     )

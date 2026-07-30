@@ -158,7 +158,7 @@ async def main() -> None:
     # The buyer packages the payment token into an x402 payload and base64-encodes
     # it into the X-Payment header. The seller middleware decodes this same shape.
     x_payment = {
-        "x402Version": 1,
+        "x402Version": 2,
         "accepted": requirements,
         "payload": {"paymentToken": payment_token, "paymentId": payment_id},
     }

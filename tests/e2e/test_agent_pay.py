@@ -111,7 +111,7 @@ class TestTC1HappyPath:
         verify = facilitator.verify(response.payment_token, quote_token, requirements)
         assert verify.is_valid is True
         # NOTE: prod payment tokens carry aud/payment_id but no `sub`, so `payer`
-        # is None here — matches the reference SDK, not a bug. Do not assert truthy.
+        # is None here by design, not a bug. Do not assert truthy.
 
         # Settle is a no-op that reports success (auto-capture).
         settle = facilitator.settle(payment_id=response.payment_id, network="aws:base")

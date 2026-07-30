@@ -3,7 +3,7 @@
 """Public import-surface tests.
 
 Asserts that the documented public API resolves from the package root. This is the
-Python analog of the reference SDK's package-export test: it guards the symbols
+Guards the symbols
 listed in ``fiat_extension_x402.__all__`` rather than the reference's framework
 scheme classes (which the Python SDK's flatter design does not expose).
 """
@@ -32,6 +32,13 @@ class TestPublicExports:
     def test_client_and_server(self) -> None:
         assert agent_pay.AgentPayClient is not None
         assert agent_pay.enhance_payment_requirements is not None
+
+    def test_client_scheme(self) -> None:
+        """The x402 framework buyer path is part of the public surface."""
+        assert agent_pay.AgentPayClientScheme is not None
+        assert agent_pay.AgentPayClientForClient is not None
+        assert agent_pay.AgentPayConfig is not None
+        assert agent_pay.create_agent_pay_client is not None
 
     def test_facilitator(self) -> None:
         assert agent_pay.AgentPayFacilitatorClient is not None

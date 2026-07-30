@@ -96,7 +96,7 @@ def _payment_required(path: str, cfg: dict[str, Any]) -> Response:
         )
     )
     payment_required = {
-        "x402Version": 1,
+        "x402Version": 2,
         "accepts": [requirements],
         "url": f"{SERVICE_URL}{path}",
         "description": cfg["description"],
@@ -110,7 +110,7 @@ def _payment_required(path: str, cfg: dict[str, Any]) -> Response:
         }
     )
     resp.status_code = 402
-    resp.headers["WWW-Authenticate"] = f'x402 version=1, accepts="{accepts_b64}"'
+    resp.headers["WWW-Authenticate"] = f'x402 version=2, accepts="{accepts_b64}"'
     return resp
 
 

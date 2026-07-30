@@ -23,6 +23,7 @@ from fiat_extension_x402.builders import (
     AgentPayClientBuilder,
     AgentPayClientConfig,
     AgentPayClientOptions,
+    AgentPayConfig,
     AgentPayResourceServer,
     AgentPayResourceServerConfig,
     AgentPayResourceServerOptions,
@@ -33,7 +34,24 @@ from fiat_extension_x402.builders import (
     create_agent_pay_client,
     create_agent_pay_resource_server,
 )
-from fiat_extension_x402.client import AgentPayClient, DEFAULT_BASE_URL
+from fiat_extension_x402.client import (
+    AgentPayClient,
+    AgentPayClientForClient,
+    DEFAULT_BASE_URL,
+)
+from fiat_extension_x402.client_scheme import AgentPayClientScheme
+from fiat_extension_x402.facilitator.client import (
+    JwksSellerKeyResolver,
+    KmsSellerKeyResolver,
+    SellerKeyResolver,
+)
+from fiat_extension_x402.facilitator_scheme import AgentPayFacilitatorScheme
+from fiat_extension_x402.networks import (
+    AgentPayAWSClientScheme,
+    AgentPayAWSFacilitatorScheme,
+    AgentPayAWSServerScheme,
+)
+from fiat_extension_x402.server_scheme import AgentPayServerScheme
 from fiat_extension_x402.discovery import (
     AgentPayDiscoveryMetadata,
     clear_discovery_cache,
@@ -106,16 +124,24 @@ from fiat_extension_x402.utils import (
 
 __all__ = [
     "ALLOWED_ALGORITHMS",
+    "AgentPayAWSClientScheme",
+    "AgentPayAWSFacilitatorScheme",
+    "AgentPayAWSServerScheme",
     "AgentPayClient",
     "AgentPayClientBuilder",
     "AgentPayClientConfig",
+    "AgentPayClientForClient",
     "AgentPayClientOptions",
+    "AgentPayClientScheme",
+    "AgentPayConfig",
     "AgentPayDiscoveryMetadata",
     "AgentPayError",
     "AgentPayFacilitatorClient",
+    "AgentPayFacilitatorScheme",
     "AgentPayResourceServer",
     "AgentPayResourceServerConfig",
     "AgentPayResourceServerOptions",
+    "AgentPayServerScheme",
     "ApiKeyAuthenticator",
     "AuthenticationError",
     "AuthenticationTimeoutError",
@@ -136,11 +162,14 @@ __all__ = [
     "InProcessFacilitatorClient",
     "InitializeOptions",
     "InvalidCredentialsError",
+    "JwksSellerKeyResolver",
+    "KmsSellerKeyResolver",
     "KmsSignerConfig",
     "MismatchError",
     "MissingCredentialsError",
     "NetworkOptions",
     "OAuth2Authenticator",
+    "SellerKeyResolver",
     "ServiceAgentPaySigner",
     "SettleResponse",
     "SignatureError",

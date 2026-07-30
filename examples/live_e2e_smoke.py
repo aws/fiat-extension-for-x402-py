@@ -6,8 +6,10 @@ A single-file, one-shot check of the full buyer flow against a *live* seller
 endpoint and the real Agent Pay service:
 
 1. GET the seller endpoint, expecting HTTP 402 with a signed quote token.
-2. Create a payment with Agent Pay (SigV4-signed) via the SDK's ``AgentPayClient``.
-3. Retry the seller with the payment token, expecting HTTP 200 + the resource.
+2. Create a payment through x402 core: the Agent Pay scheme is registered for the
+   network the seller quoted, and ``create_payment_payload`` routes the offer to
+   it, which calls CreateAgentPayment (SigV4-signed).
+3. Retry the seller with the payment attached, expecting HTTP 200 + the resource.
 
 Unlike the pytest suite under ``tests/e2e/`` (run with ``pytest -m e2e``), this is
 a plain script you can hand to anyone to confirm a deployed endpoint works. It
@@ -35,14 +37,14 @@ import base64
 import json
 import os
 import sys
-import uuid
 from typing import Any, NoReturn
 
 import httpx
 from botocore.credentials import Credentials  # type: ignore[import-untyped]
+from x402.schemas import PaymentRequired, PaymentRequiredV1
 
-from fiat_extension_x402 import AgentPayClient
-from fiat_extension_x402.schemas import CreateAgentPaymentRequest
+from fiat_extension_x402 import AgentPayClientOptions, create_agent_pay_client
+from fiat_extension_x402.constants import DEFAULT_NETWORK
 
 AGENT_PAY_BASE_URL = os.environ.get(
     "AGENTPAY_BASE_URL", "https://prod.agentpay.marketplace.aws.dev"
@@ -74,39 +76,90 @@ def _resolve_buyer_credentials() -> Credentials:
     )
 
 
-def _retry_with_payment(
-    quote_url: str, payment_token: str, accepted: dict[str, Any]
-) -> httpx.Response:
-    """Retry the seller with the payment token, trying both seller conventions.
+def _select_agent_pay_offer(body: dict[str, Any]) -> dict[str, Any]:
+    """Pick the ``agent-pay`` offer on an ``aws:*`` network from a 402 body.
 
-    Sellers accept the payment in one of two shapes, so this tries the proven
-    convention first and falls back to the other:
-
-    1. ``Authorization: Bearer <raw payment JWT>`` — what the reference deployed
-       seller verifies directly.
-    2. ``X-Payment: <base64 of {x402Version, accepted, payload}>`` — what the
-       SDK's own resource-server middleware decodes.
+    A seller's 402 can advertise multiple payment options in ``accepts``
+    (different schemes/networks), so never assume ``accepts[0]`` is Agent Pay.
     """
-    # Attempt 1: raw payment JWT as a Bearer token.
+    accepts = body.get("accepts") or []
+    if not accepts:
+        _fail("Seller 402 response carried no 'accepts' offers")
+    offer = next(
+        (
+            o
+            for o in accepts
+            if o.get("scheme") == "agent-pay" and str(o.get("network", "")).startswith("aws:")
+        ),
+        None,
+    )
+    if offer is None:
+        schemes = [f"{o.get('scheme')}/{o.get('network')}" for o in accepts]
+        _fail(f"402 response contains no agent-pay (aws) payment option; offered: {schemes}")
+    return offer
+
+
+def _as_payment_required(
+    body: dict[str, Any], x402_version: int
+) -> PaymentRequired | PaymentRequiredV1:
+    """Parse a seller's 402 body into the matching x402 model.
+
+    Sellers in the wild emit either version — this SDK's own FastAPI/Flask
+    middleware still advertises ``x402Version: 1`` — and x402 core keeps separate
+    v1/v2 dispatch paths, so the model has to match what the seller sent.
+    """
+    if x402_version == 1:
+        return PaymentRequiredV1.model_validate(body)
+    return PaymentRequired.model_validate(body)
+
+
+def _retry_with_payment(
+    quote_url: str,
+    payment_id: str,
+    payment_token: str,
+    offer: dict[str, Any],
+    x402_version: int,
+) -> httpx.Response:
+    """Retry the seller with the payment attached, standard convention first.
+
+    1. The base64-encoded x402 payment payload, sent under BOTH
+       ``PAYMENT-SIGNATURE`` (x402 v2, preferred) and ``X-PAYMENT`` (v1
+       fallback). Correctly configured sellers — including this SDK's own
+       FastAPI/Flask middleware — decode these headers.
+    2. ``Authorization: Bearer <raw payment JWT>`` — fallback only. A seller
+       that accepts *only* Bearer is misconfigured (it never decodes the
+       standard headers); the fallback keeps the smoke test useful against
+       such endpoints while flagging the problem.
+    """
+    payment_payload = {
+        "x402Version": x402_version,
+        "accepted": offer,
+        "payload": {"paymentToken": payment_token, "paymentId": payment_id},
+    }
+    encoded = base64.b64encode(json.dumps(payment_payload).encode()).decode()
+
+    # Attempt 1: the standard encoded convention (both header names).
     resp = httpx.get(
+        quote_url,
+        headers={"PAYMENT-SIGNATURE": encoded, "X-PAYMENT": encoded},
+        timeout=30.0,
+    )
+    if resp.status_code == 200:
+        print("   (accepted via encoded PAYMENT-SIGNATURE/X-PAYMENT — standard convention)")
+        return resp
+
+    # Attempt 2: raw payment JWT as a Bearer token (misconfigured-seller fallback).
+    resp2 = httpx.get(
         quote_url,
         headers={"Authorization": f"Bearer {payment_token}"},
         timeout=30.0,
     )
-    if resp.status_code == 200:
-        print("   (accepted via Authorization: Bearer)")
-        return resp
-
-    # Attempt 2: base64-encoded x402 payment payload under X-Payment.
-    wrapper = {
-        "x402Version": 1,
-        "accepted": accepted,
-        "payload": {"paymentToken": payment_token},
-    }
-    header = base64.b64encode(json.dumps(wrapper).encode()).decode()
-    resp2 = httpx.get(quote_url, headers={"X-Payment": header}, timeout=30.0)
     if resp2.status_code == 200:
-        print("   (accepted via X-Payment base64 payload)")
+        print(
+            "   ⚠️  Seller accepted only 'Authorization: Bearer' and re-402'd the standard\n"
+            "       encoded PAYMENT-SIGNATURE/X-PAYMENT headers. That endpoint is\n"
+            "       misconfigured — report it to the seller."
+        )
     return resp2
 
 
@@ -122,7 +175,15 @@ def main() -> None:
     print(f"   Agent Pay: {AGENT_PAY_BASE_URL}")
 
     credentials = _resolve_buyer_credentials()
-    client = AgentPayClient(base_url=AGENT_PAY_BASE_URL, credentials=credentials)
+    # The Agent Pay scheme registered on an x402 client: create_payment_payload
+    # below goes through x402 core, which routes the offer to this scheme.
+    buyer = create_agent_pay_client(
+        AgentPayClientOptions(
+            agent_pay_id="agentpay-live-smoke",
+            agent_pay_base_url=AGENT_PAY_BASE_URL,
+            credentials=credentials,
+        )
+    )
 
     # Step 1: GET the seller endpoint, expecting a 402 with a quote token.
     print("\n1. Calling seller endpoint (expecting 402)...")
@@ -134,10 +195,8 @@ def main() -> None:
         _fail(f"Expected 402 from seller, got {res.status_code}")
     print("   -> Got 402 (Payment Required)")
 
-    accepts = (res.json() or {}).get("accepts") or []
-    if not accepts:
-        _fail("Seller 402 response carried no 'accepts' offers")
-    offer = accepts[0]
+    body = res.json() or {}
+    offer = _select_agent_pay_offer(body)
     extra = offer.get("extra") or {}
     # Accept either snake_case or camelCase from the seller.
     quote_token = extra.get("quoteToken") or extra.get("quote_token")
@@ -145,28 +204,36 @@ def main() -> None:
         _fail("Seller 402 offer carried no quoteToken")
     print(f"   quote: {offer.get('amount')} {offer.get('asset')}  ({offer.get('network')})")
 
-    # Step 2: create the payment with Agent Pay (SigV4-signed by the SDK).
-    print("\n2. Creating payment with Agent Pay...")
-    try:
-        payment = client.create_payment(
-            CreateAgentPaymentRequest(
-                quote_token=quote_token,
-                client_token=str(uuid.uuid4()),
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 - surface any auth/validation failure
-        _fail(f"CreateAgentPayment failed: {exc}")
-    print(f"   -> Payment created: {payment.payment_id}")
+    # Register whatever network this seller quoted, so core can route the offer.
+    network = offer.get("network") or DEFAULT_NETWORK
+    buyer.register_network(str(network))
 
-    # Step 3: retry the seller with the payment token, expecting 200.
-    print("\n3. Retrying seller with payment token (expecting 200)...")
-    final = _retry_with_payment(quote_url, payment.payment_token, offer)
+    # Step 2: create the payment through x402 core (SigV4-signed by the SDK).
+    print("\n2. Creating payment with Agent Pay...")
+    x402_version = int(body.get("x402Version") or 1)
+    try:
+        payload = buyer.create_payment_payload(_as_payment_required(body, x402_version))
+    except Exception as exc:  # noqa: BLE001 - surface any auth/validation failure
+        _fail(f"create_payment_payload failed: {exc}")
+    payment_id = str(payload.payload["paymentId"])
+    payment_token = str(payload.payload["paymentToken"])
+    print(f"   -> Payment created: {payment_id}")
+
+    # Step 3: retry the seller with the payment attached, expecting 200.
+    print("\n3. Retrying seller with payment (expecting 200)...")
+    final = _retry_with_payment(
+        quote_url,
+        payment_id,
+        payment_token,
+        offer,
+        x402_version,
+    )
     if final.status_code != 200:
         _fail(f"Expected 200 after payment, got {final.status_code}: {final.text[:200]}")
     print(f"   -> Success: {final.text[:200]}")
 
     print("\n✅ Agent Pay e2e smoke test PASSED")
-    print(f"   Payment ID: {payment.payment_id}")
+    print(f"   Payment ID: {payment_id}")
 
 
 if __name__ == "__main__":

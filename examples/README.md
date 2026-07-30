@@ -80,9 +80,15 @@ verified payment details are available on `request.state.agent_pay_payment`
 
 `live_e2e_smoke.py` is a single-file, one-shot check of the full buyer flow
 against a **real** seller endpoint and the live Agent Pay service: GET the seller
-(expect 402) → create a payment → retry with the payment token (expect 200). It
-uses only the SDK and its runtime dependencies — no dev extras — and reads its
-configuration from the environment, so no endpoint or secret is hardcoded.
+(expect 402), select the `agent-pay` offer on an `aws:*` network from `accepts`,
+register that network on an x402 client and call `create_payment_payload` (core
+routes the offer to the Agent Pay scheme, which calls CreateAgentPayment), then
+retry with the base64-encoded payment payload under the standard
+`PAYMENT-SIGNATURE`/`X-PAYMENT` headers (expect 200). If the seller only
+accepts a raw `Authorization: Bearer` token, the script still passes via that
+fallback but flags the endpoint as misconfigured. It uses only the SDK and its
+runtime dependencies — no dev extras — and reads its configuration from the
+environment, so no endpoint or secret is hardcoded.
 
 ```bash
 export AGENTPAY_QUOTE_URL="https://<seller-endpoint>/"   # required — returns HTTP 402
@@ -102,3 +108,4 @@ hand-it-to-anyone version.
 - [Top-level README](../README.md) — quickstart for each role
 - [docs/sdk-guide.md](../docs/sdk-guide.md) — conceptual deep-dive
 - [docs/payment-flow.md](../docs/payment-flow.md) — the payment sequence diagram
+- [utils/](../utils/) — e2e test of the official AWS SDK (boto3) preview client

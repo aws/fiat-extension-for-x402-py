@@ -11,7 +11,10 @@ Covers:
 
 from __future__ import annotations
 
+import base64
 import json
+import time
+from typing import Any
 
 import httpx
 import pytest
@@ -378,6 +381,46 @@ class TestClientListPayments:
         assert result.payments == []
 
     @respx.mock
+    def test_accepts_a_typed_request(self) -> None:
+        """The typed model serializes to the camelCase body the service expects."""
+        from fiat_extension_x402.client import AgentPayClient
+        from fiat_extension_x402.schemas import (
+            ListAgentPaymentsRequest,
+            ListAgentPaymentsSort,
+        )
+
+        route = respx.post("https://test.example.com/ListAgentPayments").mock(
+            return_value=httpx.Response(200, json={"payments": []})
+        )
+        client = AgentPayClient(base_url="https://test.example.com")
+        client.list_payments(
+            ListAgentPaymentsRequest(
+                max_results=25,
+                next_token="tok-1",
+                sort=ListAgentPaymentsSort(sort_by="CreatedAt", sort_order="Desc"),
+            )
+        )
+
+        sent = json.loads(route.calls[0].request.content)
+        assert sent == {
+            "maxResults": 25,
+            "nextToken": "tok-1",
+            "sort": {"sortBy": "CreatedAt", "sortOrder": "Desc"},
+        }
+
+    @respx.mock
+    def test_still_accepts_a_raw_dict(self) -> None:
+        from fiat_extension_x402.client import AgentPayClient
+
+        route = respx.post("https://test.example.com/ListAgentPayments").mock(
+            return_value=httpx.Response(200, json={"payments": []})
+        )
+        client = AgentPayClient(base_url="https://test.example.com")
+        client.list_payments({"maxResults": 10})
+
+        assert json.loads(route.calls[0].request.content) == {"maxResults": 10}
+
+    @respx.mock
     def test_error(self) -> None:
         from fiat_extension_x402.client import AgentPayClient
 
@@ -501,3 +544,143 @@ class TestClientGenericException:
         client = AgentPayClient(base_url="https://test.example.com")
         with pytest.raises(ValidationError, match="Failed to list payments"):
             client.list_payments()
+
+
+class TestClientVerifyPaymentToken:
+    """`verify_payment_token` checks a token against Agent Pay's published keys."""
+
+    @staticmethod
+    def _keypair() -> tuple[Any, dict[str, Any]]:
+        from cryptography.hazmat.primitives.asymmetric.ec import (
+            SECP384R1,
+            generate_private_key,
+        )
+
+        key = generate_private_key(SECP384R1())
+        numbers = key.public_key().public_numbers()
+
+        def b64(raw: bytes) -> str:
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+        jwk = {
+            "kty": "EC",
+            "crv": "P-384",
+            "x": b64(numbers.x.to_bytes(48, "big")),
+            "y": b64(numbers.y.to_bytes(48, "big")),
+            "kid": "ap-key-1",
+            "use": "sig",
+            "alg": "ES384",
+        }
+        return key, jwk
+
+    @classmethod
+    def _token(cls, key: Any, *, kid: str = "ap-key-1") -> str:
+        import jwt as pyjwt
+
+        now = int(time.time())
+        return str(
+            pyjwt.encode(
+                {
+                    "iss": "awsmp-agentpay.amazonaws.com",
+                    "aud": "https://seller.example.com",
+                    "iat": now,
+                    "exp": now + 3600,
+                    "sub": "111122223333",
+                    "payment_id": "awsmp-00000000-0000-0000-0000-000000000001",
+                    "quote_token": "eyJ.quote",
+                },
+                key,
+                algorithm="ES384",
+                headers={"kid": kid},
+            )
+        )
+
+    @respx.mock
+    def test_verifies_a_genuine_token(self) -> None:
+        from fiat_extension_x402.client import AgentPayClient
+        from fiat_extension_x402.constants import WELL_KNOWN_JWKS_PATH
+
+        key, jwk = self._keypair()
+        route = respx.get(f"{_TEST_BASE_URL}{WELL_KNOWN_JWKS_PATH}").mock(
+            return_value=httpx.Response(200, json={"keys": [jwk]})
+        )
+
+        client = AgentPayClient(base_url=_TEST_BASE_URL)
+        claims = client.verify_payment_token(self._token(key))
+
+        assert claims.iss == "awsmp-agentpay.amazonaws.com"
+        assert claims.sub == "111122223333"
+        assert claims.payment_id == "awsmp-00000000-0000-0000-0000-000000000001"
+        # Agent Pay's JWKS endpoint sits behind a WAF that expects this header.
+        assert route.calls[0].request.headers["x-agentpay-key"]
+
+    @respx.mock
+    def test_rejects_an_expired_token(self) -> None:
+        """A payment token past its `exp` is not genuine for present use."""
+        import jwt as pyjwt
+
+        from fiat_extension_x402.client import AgentPayClient
+        from fiat_extension_x402.constants import WELL_KNOWN_JWKS_PATH
+
+        key, jwk = self._keypair()
+        respx.get(f"{_TEST_BASE_URL}{WELL_KNOWN_JWKS_PATH}").mock(
+            return_value=httpx.Response(200, json={"keys": [jwk]})
+        )
+        now = int(time.time())
+        expired = pyjwt.encode(
+            {
+                "iss": "awsmp-agentpay.amazonaws.com",
+                "aud": "https://seller.example.com",
+                "iat": now - 7200,
+                "exp": now - 3600,
+                "sub": "111122223333",
+                "payment_id": "awsmp-00000000-0000-0000-0000-000000000001",
+            },
+            key,
+            algorithm="ES384",
+            headers={"kid": "ap-key-1"},
+        )
+
+        client = AgentPayClient(base_url=_TEST_BASE_URL)
+        with pytest.raises(ValidationError, match="expired"):
+            client.verify_payment_token(expired)
+
+    @respx.mock
+    def test_rejects_a_tampered_token(self) -> None:
+        from fiat_extension_x402.client import AgentPayClient
+        from fiat_extension_x402.constants import WELL_KNOWN_JWKS_PATH
+
+        key, jwk = self._keypair()
+        respx.get(f"{_TEST_BASE_URL}{WELL_KNOWN_JWKS_PATH}").mock(
+            return_value=httpx.Response(200, json={"keys": [jwk]})
+        )
+
+        tampered = self._token(key)[:-6] + "AAAAAA"
+        client = AgentPayClient(base_url=_TEST_BASE_URL)
+        with pytest.raises(ValidationError, match="Failed to verify payment token"):
+            client.verify_payment_token(tampered)
+
+    @respx.mock
+    def test_rejects_an_unknown_signing_key(self) -> None:
+        from fiat_extension_x402.client import AgentPayClient
+        from fiat_extension_x402.constants import WELL_KNOWN_JWKS_PATH
+
+        key, jwk = self._keypair()
+        respx.get(f"{_TEST_BASE_URL}{WELL_KNOWN_JWKS_PATH}").mock(
+            return_value=httpx.Response(200, json={"keys": [{**jwk, "kid": "someone-else"}]})
+        )
+
+        client = AgentPayClient(base_url=_TEST_BASE_URL)
+        with pytest.raises(ValidationError, match="No Agent Pay signing key"):
+            client.verify_payment_token(self._token(key))
+
+    @respx.mock
+    def test_surfaces_a_jwks_fetch_failure(self) -> None:
+        from fiat_extension_x402.client import AgentPayClient
+        from fiat_extension_x402.constants import WELL_KNOWN_JWKS_PATH
+
+        respx.get(f"{_TEST_BASE_URL}{WELL_KNOWN_JWKS_PATH}").mock(return_value=httpx.Response(403))
+
+        client = AgentPayClient(base_url=_TEST_BASE_URL)
+        with pytest.raises(ValidationError, match="Failed to fetch Agent Pay public keys"):
+            client.verify_payment_token("eyJ.a.b")
