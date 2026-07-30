@@ -29,14 +29,22 @@ Or use the convenience builder::
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from fiat_extension_x402.constants import DEFAULT_AGENT_PAY_BASE_URL
+from fiat_extension_x402.constants import AGENT_PAY_SCHEME, DEFAULT_AGENT_PAY_BASE_URL
 from fiat_extension_x402.exceptions import ValidationError
 from fiat_extension_x402.facilitator import AgentPayFacilitatorClient
+from fiat_extension_x402.facilitator.client import SellerKeyResolver
 from fiat_extension_x402.server import enhance_payment_requirements
 from fiat_extension_x402.signers.protocol import ServiceAgentPaySigner
+from fiat_extension_x402.utils import parse_money_to_decimal
+
+
+def _has_explicit_currency(price: Any) -> bool:
+    """True when a price string names its own currency (e.g. ``"2.00 EUR"``)."""
+    return isinstance(price, str) and bool(re.search(r"[A-Z]{3}\s*$", price.strip()))
 
 
 @dataclass
@@ -47,12 +55,15 @@ class AgentPayResourceServerOptions:
     :param agent_pay_id: Agent Pay ID for the facilitator.
     :param signer: Service signer for quote tokens.
     :param service_url: Service URL (used as issuer in quote tokens).
+    :param seller_key_resolver: How the facilitator locates the seller's
+        quote-signing key. Omit to discover it from the quote token's ``iss``.
     """
 
     agent_pay_base_url: str
     agent_pay_id: str
     signer: ServiceAgentPaySigner
     service_url: str
+    seller_key_resolver: Optional[SellerKeyResolver] = None
 
 
 @dataclass
@@ -85,6 +96,8 @@ class AgentPayResourceServerConfig:
     :param signer: Service signer for quote tokens.
     :param service_url: Service URL (used as issuer in quote tokens).
     :param disable_default_fallback: Disable default facilitator fallback.
+    :param seller_key_resolver: How the facilitator locates the seller's
+        quote-signing key. Omit to discover it from the quote token's ``iss``.
     """
 
     networks: list[str]
@@ -93,6 +106,7 @@ class AgentPayResourceServerConfig:
     signer: ServiceAgentPaySigner
     service_url: str
     disable_default_fallback: bool = False
+    seller_key_resolver: Optional[SellerKeyResolver] = None
 
 
 class AgentPayResourceServer:
@@ -175,19 +189,34 @@ class AgentPayResourceServer:
     ) -> dict[str, Any]:
         """Build payment requirements with a signed quote token.
 
+        The price is parsed rather than stringified, so ``"$0.50"``,
+        ``"0.50 USD"`` and numerics all normalise to a decimal amount and an
+        ISO 4217 asset. A malformed price fails here, at the seller, instead of
+        being signed into a quote token and rejected later by Agent Pay on the
+        buyer's ``CreateAgentPayment`` call.
+
         :param network: Network identifier.
         :param pay_to: Recipient Agent Pay ID.
-        :param price: Price for this resource.
-        :param asset: Asset identifier (e.g., ``'iso4217:USD'``).
+        :param price: ``"0.50"``, ``"$0.50"``, ``"0.50 USD"``, or a number.
+        :param asset: Asset identifier (e.g., ``'iso4217:USD'``). A currency
+            parsed out of ``price`` takes precedence.
         :param extra: Additional fields to include in the quote token.
         :returns: Enhanced payment requirements with signed quote token.
+        :raises ValidationError: if ``price`` is not a recognised money value.
         """
+        if price is None:
+            raise ValidationError("price is required")
+        parsed = parse_money_to_decimal(price)
+        # An explicit currency in the price wins; otherwise keep the given asset.
+        parsed_asset = f"iso4217:{parsed['currency']}"
+        resolved_asset = parsed_asset if _has_explicit_currency(price) else asset
+
         base_requirements: dict[str, Any] = {
-            "scheme": "agent-pay",
+            "scheme": AGENT_PAY_SCHEME,
             "network": network,
             "payTo": pay_to,
-            "amount": str(price),
-            "asset": asset,
+            "amount": str(parsed["amount"]),
+            "asset": resolved_asset,
             "extra": extra or {},
         }
 
@@ -230,7 +259,12 @@ def create_agent_pay_resource_server(
     """
     _validate_base_config(config)
 
-    facilitator = AgentPayFacilitatorClient()
+    # Thread the configured endpoint through: without it a beta/gamma base URL
+    # was validated and then silently discarded, pinning every seller to prod.
+    facilitator = AgentPayFacilitatorClient(
+        agent_pay_base_url=config.agent_pay_base_url or DEFAULT_AGENT_PAY_BASE_URL,
+        seller_key_resolver=config.seller_key_resolver,
+    )
 
     return AgentPayResourceServer(
         signer=config.signer,
@@ -257,6 +291,7 @@ def build_agent_pay_resource_server(
             agent_pay_id=config.agent_pay_id,
             signer=config.signer,
             service_url=config.service_url,
+            seller_key_resolver=config.seller_key_resolver,
         )
     )
 

@@ -31,6 +31,18 @@ class MockSigner:
         return "https://api.example.com"
 
 
+def _make_server(**overrides: Any) -> AgentPayResourceServer:
+    """Build a resource server with sensible defaults for these tests."""
+    options: dict[str, Any] = {
+        "agent_pay_base_url": "https://pay.aws.amazon.com",
+        "agent_pay_id": "test-id",
+        "signer": MockSigner(),
+        "service_url": "https://api.example.com",
+    }
+    options.update(overrides)
+    return create_agent_pay_resource_server(AgentPayResourceServerOptions(**options))
+
+
 class TestCreateAgentPayResourceServer:
     def test_creates_server(self) -> None:
         server = create_agent_pay_resource_server(
@@ -240,3 +252,70 @@ class TestBuildAgentPayResourceServer:
             )
         )
         assert server.registered_networks == {"aws:base", "eip155:8453"}
+
+
+class TestBuildPaymentRequirementsPriceParsing:
+    """The builder parses prices instead of stringifying whatever it is handed.
+
+    An unvalidated price used to be signed straight into the quote token, so a
+    malformed value failed later at Agent Pay on the buyer's call rather than
+    here at the seller.
+    """
+
+    @pytest.mark.parametrize(
+        ("price", "amount", "asset"),
+        [
+            ("0.15", "0.15", "iso4217:USD"),
+            ("$10.00", "10.0", "iso4217:USD"),
+            ("2.00 EUR", "2.0", "iso4217:EUR"),
+            (0.15, "0.15", "iso4217:USD"),
+            (3, "3.0", "iso4217:USD"),
+        ],
+    )
+    async def test_normalises_valid_prices(self, price: object, amount: str, asset: str) -> None:
+        server = _make_server()
+        server.register_network("aws:base")
+        result = await server.build_payment_requirements(
+            network="aws:base", pay_to="seller-1", price=price
+        )
+        assert result["amount"] == amount
+        assert result["asset"] == asset
+
+    @pytest.mark.parametrize("price", ["free please", "abc", ""])
+    async def test_rejects_malformed_prices(self, price: str) -> None:
+        server = _make_server()
+        server.register_network("aws:base")
+        with pytest.raises(ValidationError, match="Invalid money format"):
+            await server.build_payment_requirements(
+                network="aws:base", pay_to="seller-1", price=price
+            )
+
+    async def test_rejects_a_missing_price(self) -> None:
+        server = _make_server()
+        server.register_network("aws:base")
+        with pytest.raises(ValidationError, match="price is required"):
+            await server.build_payment_requirements(
+                network="aws:base", pay_to="seller-1", price=None
+            )
+
+    async def test_explicit_asset_is_kept_when_the_price_names_no_currency(self) -> None:
+        server = _make_server()
+        server.register_network("aws:base")
+        result = await server.build_payment_requirements(
+            network="aws:base", pay_to="seller-1", price="0.15", asset="iso4217:GBP"
+        )
+        assert result["asset"] == "iso4217:GBP"
+
+
+class TestBuilderThreadsConfiguration:
+    def test_configured_base_url_reaches_the_facilitator(self) -> None:
+        """A beta endpoint used to be validated and then discarded."""
+        server = _make_server(agent_pay_base_url="https://beta.agentpay.example.com")
+        assert server.facilitator._agent_pay_base_url == "https://beta.agentpay.example.com"
+
+    def test_seller_key_resolver_reaches_the_facilitator(self) -> None:
+        from fiat_extension_x402.facilitator.client import JwksSellerKeyResolver
+
+        resolver = JwksSellerKeyResolver(jwks_url="https://keys.example.com")
+        server = _make_server(seller_key_resolver=resolver)
+        assert server.facilitator._seller_key_resolver is resolver

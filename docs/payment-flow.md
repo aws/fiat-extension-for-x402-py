@@ -69,8 +69,8 @@ Buyer Agent                    Seller API                  Agent Pay Service
 | Step | Party | SDK call |
 |------|-------|----------|
 | 2 | Seller | `enhance_payment_requirements(requirements, signer)` — signs the quote token and embeds it in `extra.quoteToken` |
-| 3–4 | Buyer | `AgentPayClient.create_payment(CreateAgentPaymentRequest(quote_token=...))` |
-| 5 | Buyer | Encode an `X-Payment` payload (base64 JSON) and retry the request |
+| 3–4 | Buyer | `create_payment_payload(payment_required)` on a network-registered client — x402 core routes to the Agent Pay scheme, which calls `CreateAgentPayment`. (Direct alternative: `AgentPayClient.create_payment(CreateAgentPaymentRequest(quote_token=...))`) |
+| 5 | Buyer | `x402HTTPClientSync(...).encode_payment_signature_header(payload)` → `PAYMENT-SIGNATURE` (v2) or `X-PAYMENT` (v1), then retry the request |
 | 6–7 | Seller | `AgentPayFacilitatorClient.verify(payment_token, expected_quote_token, requirements)` |
 | 8 | Seller | Deliver the resource; `facilitator.settle(...)` is a no-op (auto-captured at step 3) |
 

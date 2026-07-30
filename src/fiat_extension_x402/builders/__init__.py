@@ -6,6 +6,7 @@ from fiat_extension_x402.builders.client_builder import (
     AgentPayClientBuilder,
     AgentPayClientConfig,
     AgentPayClientOptions,
+    AgentPayConfig,
     build_agent_pay_client,
     create_agent_pay_client,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "AgentPayClientBuilder",
     "AgentPayClientConfig",
     "AgentPayClientOptions",
+    "AgentPayConfig",
     "AgentPayResourceServer",
     "AgentPayResourceServerConfig",
     "AgentPayResourceServerOptions",

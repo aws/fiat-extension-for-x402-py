@@ -115,6 +115,40 @@ class TestAgentPayFastAPIMiddlewareRouting:
         assert resp.headers.get("www-authenticate", "").startswith("x402 ")
         assert "payment-required" in resp.headers
 
+    def test_402_body_is_a_valid_x402_v2_payment_required(self) -> None:
+        """The advertised version must match the body's actual shape.
+
+        The requirements carry ``amount`` (v2), not ``maxAmountRequired`` +
+        ``resource`` (v1), so the body has to declare v2 — a buyer parses it with
+        the model the version names, and x402 core dispatches v1 and v2 through
+        separate registries.
+        """
+        from x402.schemas import PaymentRequired
+
+        app = FastAPI()
+        init = agent_pay_fastapi_middleware(_make_config())
+        init(app)
+
+        @app.get("/api/premium")
+        async def premium() -> dict[str, str]:
+            return {"msg": "premium"}
+
+        resp = TestClient(app).get("/api/premium")
+        body = resp.json()
+
+        assert body["x402Version"] == 2
+        # Round-trips through the model the declared version names.
+        parsed = PaymentRequired.model_validate(body)
+        assert parsed.accepts[0].scheme == "agent-pay"
+        assert parsed.accepts[0].extra["quoteToken"]
+
+        # The header advertises the same version as the body.
+        assert resp.headers["www-authenticate"].startswith("x402 version=2,")
+
+        # And the base64 blob in the header decodes to that same body.
+        blob = resp.headers["payment-required"]
+        assert json.loads(base64.b64decode(blob))["x402Version"] == 2
+
     def test_method_mismatch_passes_through(self) -> None:
         app = FastAPI()
         init = agent_pay_fastapi_middleware(_make_config())
@@ -520,3 +554,25 @@ class TestAgentPayFastAPIMiddlewareHooks:
 
         assert resp.status_code == 503
         assert resp.json()["custom"] == "boom"
+
+
+class TestResourceMetadataShape:
+    def test_402_nests_resource_metadata(self) -> None:
+        """x402 tooling reads url/description/mimeType from `resource`."""
+        from x402.schemas import PaymentRequired
+
+        app = FastAPI()
+        init = agent_pay_fastapi_middleware(_make_config())
+        init(app)
+
+        @app.get("/api/premium")
+        async def premium() -> dict[str, str]:
+            return {"msg": "premium"}
+
+        body = TestClient(app).get("/api/premium").json()
+
+        assert "url" not in body, "resource metadata must not be flattened onto the body"
+        parsed = PaymentRequired.model_validate(body)
+        assert parsed.resource is not None
+        assert parsed.resource.url.endswith("/api/premium")
+        assert parsed.resource.mime_type == "application/json"

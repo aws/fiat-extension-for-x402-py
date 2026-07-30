@@ -9,7 +9,7 @@ flow in a single process with mocked HTTP).
 |---------|------|------|------|
 | Mock Agent Pay | [`mock_agent_pay_server.py`](./mock_agent_pay_server.py) | 3001 | Stands in for the AWS Marketplace Agent Pay Service: mints/signs payment tokens, serves its JWKS |
 | Seller service | [`seller_service.py`](./seller_service.py) | 3002 | Protected resource server: returns 402 + signed quote, verifies payment, serves the resource |
-| Buyer client | [`buyer_client.py`](./buyer_client.py) | — | Uses the SDK's `AgentPayClient` to pay and fetch the protected resource |
+| Buyer client | [`buyer_client.py`](./buyer_client.py) | — | Registers the Agent Pay scheme on an x402 client and pays via `create_payment_payload` |
 
 ## What it demonstrates
 
@@ -17,8 +17,12 @@ flow in a single process with mocked HTTP).
   signed quote token, creates a payment, and retries with an `x402` Authorization
   header to get `200` + the resource.
 - **Real SDK on every leg**: the seller drives `AgentPayResourceServer` /
-  `AgentPayFacilitatorClient`; the buyer uses `AgentPayClient` with SigV4 signing.
+  `AgentPayFacilitatorClient`; the buyer goes through x402 core, which routes the
+  `agent-pay` offer to the registered `AgentPayClientScheme` (SigV4-signed).
   Only the Agent Pay *provider* is a mock.
+- **x402 v1 interop**: this seller advertises `x402Version: 1`, so core returns a
+  `PaymentPayloadV1`. `register_network` registers the scheme for both v1 and v2,
+  which is what makes the v1 seller payable.
 - **Real cryptographic verification**: the seller signs quote tokens with a local
   ES384 key and the mock signs payment tokens with its own ES384 key. Verification
   fetches each party's public JWKS over HTTP and checks both signatures — nothing
@@ -78,6 +82,6 @@ mock:
 server._facilitator = AgentPayFacilitatorClient(jwks_base_url="http://localhost:3001")
 ```
 
-The buyer's `AgentPayClient` is pointed at the mock with `base_url`, and signs
-with throwaway local credentials — the mock accepts any `AWS4-HMAC-SHA256`
-request, so no real AWS identity is involved.
+The buyer is built with `create_agent_pay_client(...)` pointed at the mock via
+`agent_pay_base_url`, and signs with throwaway local credentials — the mock accepts
+any `AWS4-HMAC-SHA256` request, so no real AWS identity is involved.

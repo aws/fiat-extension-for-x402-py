@@ -126,6 +126,7 @@ def _make_payment_token(
     sub: str = "buyer-account-123",
     payment_id: str = "awsmp-01970f3e-4b2a-7dc0-8e1f-6a3b9c5d7e2f",
     include_quote: bool = True,
+    cnf_jkt: str | None = None,
 ) -> str:
     """Create a real Agent Pay-signed payment token JWT."""
     now = int(time.time())
@@ -139,6 +140,8 @@ def _make_payment_token(
     }
     if include_quote:
         claims["quote_token"] = quote_token
+    if cnf_jkt is not None:
+        claims["cnf"] = {"jkt": cnf_jkt}
     return _sign_jwt(claims, _AP_PRIVATE_KEY)
 
 
@@ -179,7 +182,7 @@ def test_verify_signature_mismatch_wrong_key() -> None:
     result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "verification_error"
+    assert result.invalid_reason == "verification_failed"
 
 
 @respx.mock
@@ -198,7 +201,7 @@ def test_verify_tampered_token() -> None:
     result = client.verify(tampered_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "verification_error"
+    assert result.invalid_reason == "verification_failed"
 
 
 @respx.mock
@@ -213,7 +216,7 @@ def test_verify_expired_payment_token() -> None:
     result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "expired"
+    assert result.invalid_reason == "payment_expired"
     assert result.invalid_message == "Payment token expired"
 
 
@@ -229,7 +232,7 @@ def test_verify_missing_quote_token_in_claims() -> None:
     result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "invalid_payment"
+    assert result.invalid_reason == "invalid_quote"
     assert "Missing quote token" in (result.invalid_message or "")
 
 
@@ -246,8 +249,45 @@ def test_verify_quote_token_mismatch() -> None:
     result = client.verify(payment_token, different_quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "invalid_payment"
+    assert result.invalid_reason == "invalid_quote"
     assert "mismatch" in (result.invalid_message or "").lower()
+
+
+@respx.mock
+def test_verify_expired_quote_token() -> None:
+    """An expired quote token is rejected even when the payment token is valid.
+
+    The signature check runs with pyjwt's exp validation disabled, so the quote's
+    own validity window has to be enforced explicitly.
+    """
+    respx.get(_AGENT_PAY_JWKS_URL).mock(return_value=httpx.Response(200, json=_make_jwks(_AP_JWK)))
+    respx.get(_SELLER_JWKS_URL).mock(return_value=httpx.Response(200, json=_make_jwks(_SELLER_JWK)))
+
+    quote_token = _make_quote_token(exp=int(time.time()) - 10)
+    payment_token = _make_payment_token(quote_token=quote_token)
+
+    client = AgentPayFacilitatorClient()
+    result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
+
+    assert result.is_valid is False
+    assert result.invalid_reason == "quote_expired"
+    assert "expired" in (result.invalid_message or "").lower()
+
+
+@respx.mock
+def test_verify_quote_token_without_issuer() -> None:
+    """A quote token carrying no `iss` is rejected before any JWKS fetch."""
+    respx.get(_AGENT_PAY_JWKS_URL).mock(return_value=httpx.Response(200, json=_make_jwks(_AP_JWK)))
+
+    quote_token = _make_quote_token(iss="")
+    payment_token = _make_payment_token(quote_token=quote_token)
+
+    client = AgentPayFacilitatorClient()
+    result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
+
+    assert result.is_valid is False
+    assert result.invalid_reason == "invalid_quote"
+    assert "issuer" in (result.invalid_message or "").lower()
 
 
 @respx.mock
@@ -287,7 +327,7 @@ def test_verify_jwks_fetch_failure() -> None:
     result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "verification_error"
+    assert result.invalid_reason == "verification_failed"
 
 
 # ============================================================================
@@ -432,7 +472,7 @@ def test_verify_disallowed_algorithm() -> None:
     result = client.verify(fake_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "verification_error"
+    assert result.invalid_reason == "verification_failed"
     assert "not allowed" in (result.invalid_message or "").lower()
 
 
@@ -460,7 +500,7 @@ def test_verify_kid_mismatch_no_matching_key() -> None:
     result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "verification_error"
+    assert result.invalid_reason == "verification_failed"
     assert "no matching key" in (result.invalid_message or "").lower()
 
 
@@ -485,7 +525,7 @@ def test_verify_malformed_jwk_raises_pyjwt_error() -> None:
     result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "verification_error"
+    assert result.invalid_reason == "verification_failed"
 
 
 @respx.mock
@@ -509,7 +549,7 @@ def test_verify_unexpected_exception_in_token_verify(
     result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "verification_error"
+    assert result.invalid_reason == "verification_failed"
 
 
 @respx.mock
@@ -599,7 +639,7 @@ def test_verify_quote_signature_mismatch() -> None:
     result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "verification_error"
+    assert result.invalid_reason == "verification_failed"
 
 
 @respx.mock
@@ -615,7 +655,7 @@ def test_verify_seller_jwks_non_200() -> None:
     result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
 
     assert result.is_valid is False
-    assert result.invalid_reason == "verification_error"
+    assert result.invalid_reason == "verification_failed"
 
 
 @respx.mock
@@ -763,7 +803,7 @@ class TestDpopAwareVerification:
             },
         )
         assert result.is_valid is False
-        assert result.invalid_reason == "invalid_dpop"
+        assert result.invalid_reason == "dpop_invalid"
 
     @respx.mock
     def test_dpop_bound_without_proof_is_rejected(self) -> None:
@@ -871,4 +911,71 @@ class TestDpopAwareVerification:
 
         client = AgentPayFacilitatorClient()
         result = client.verify(payment_token, quote_token, _DEFAULT_REQUIREMENTS)
+        assert result.is_valid is True
+
+
+class TestDpopRequestBinding:
+    """A DPoP proof is only meaningful with the request it was bound to.
+
+    Verifying signature and thumbprint but skipping htm/htu would prove key
+    possession while silently dropping the request binding, letting a captured
+    proof be replayed against a different method or endpoint.
+    """
+
+    @respx.mock
+    def test_proof_without_method_and_url_is_rejected(self) -> None:
+        from fiat_extension_x402.dpop import create_dpop_proof, generate_dpop_keypair
+        from fiat_extension_x402.dpop.proof_verification import extract_dpop_thumbprint
+
+        respx.get(_AGENT_PAY_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=_make_jwks(_AP_JWK))
+        )
+        respx.get(_SELLER_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=_make_jwks(_SELLER_JWK))
+        )
+        keypair = generate_dpop_keypair("ES256")
+        proof = create_dpop_proof(keypair, {"htm": "GET", "htu": "https://api.example.com/r"})
+        quote_token = _make_quote_token()
+        payment_token = _make_payment_token(
+            quote_token=quote_token, cnf_jkt=extract_dpop_thumbprint(proof)
+        )
+
+        result = AgentPayFacilitatorClient().verify(
+            payment_token,
+            quote_token,
+            _DEFAULT_REQUIREMENTS,
+            verify_options={"dpop_proof": proof},
+        )
+
+        assert result.is_valid is False
+        assert result.invalid_reason == "dpop_invalid"
+        assert "htm/htu" in (result.invalid_message or "")
+
+    @respx.mock
+    def test_method_comparison_is_case_insensitive(self) -> None:
+        """A framework reporting a lowercase method must still verify."""
+        from fiat_extension_x402.dpop import create_dpop_proof, generate_dpop_keypair
+        from fiat_extension_x402.dpop.proof_verification import extract_dpop_thumbprint
+
+        respx.get(_AGENT_PAY_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=_make_jwks(_AP_JWK))
+        )
+        respx.get(_SELLER_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=_make_jwks(_SELLER_JWK))
+        )
+        keypair = generate_dpop_keypair("ES256")
+        url = "https://api.example.com/r"
+        proof = create_dpop_proof(keypair, {"htm": "GET", "htu": url})
+        quote_token = _make_quote_token()
+        payment_token = _make_payment_token(
+            quote_token=quote_token, cnf_jkt=extract_dpop_thumbprint(proof)
+        )
+
+        result = AgentPayFacilitatorClient().verify(
+            payment_token,
+            quote_token,
+            _DEFAULT_REQUIREMENTS,
+            verify_options={"dpop_proof": proof, "method": "get", "url": url},
+        )
+
         assert result.is_valid is True

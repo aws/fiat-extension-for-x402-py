@@ -249,12 +249,16 @@ def agent_pay_middleware(config: AgentPayMiddlewareConfig) -> Callable[[Flask], 
                         )
                     )
 
+                    # x402 nests resource metadata under `resource`; stock x402 tooling
+                    # reads it from there and silently sees nothing if flattened.
                     payment_required = {
-                        "x402Version": 1,
+                        "x402Version": 2,
                         "accepts": [requirements],
-                        "url": f"{config.service_url}{request.path}",
-                        "description": route_config.description or f"Access to {request.path}",
-                        "mimeType": route_config.mime_type or "application/json",
+                        "resource": {
+                            "url": f"{config.service_url}{request.path}",
+                            "description": route_config.description or f"Access to {request.path}",
+                            "mimeType": route_config.mime_type or "application/json",
+                        },
                     }
 
                     accepts_base64 = base64.b64encode(
@@ -266,7 +270,7 @@ def agent_pay_middleware(config: AgentPayMiddlewareConfig) -> Callable[[Flask], 
                         status=402,
                         content_type="application/json",
                     )
-                    resp.headers["WWW-Authenticate"] = f'x402 version=1, accepts="{accepts_base64}"'
+                    resp.headers["WWW-Authenticate"] = f'x402 version=2, accepts="{accepts_base64}"'
                     resp.headers["PAYMENT-REQUIRED"] = accepts_base64
                     return resp
 

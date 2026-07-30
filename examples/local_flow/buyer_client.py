@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Buyer client for the local three-process Agent Pay x402 demo.
 
-Drives the full buyer flow against the local seller service and mock Agent Pay,
-using the SDK's real :class:`AgentPayClient`:
+Drives the full buyer flow against the local seller service and mock Agent Pay
+through the x402 framework path — the Agent Pay scheme registered on an
+``x402ClientSync``:
 
 1. GET a protected route -> receive 402 Payment Required.
-2. Parse the signed quote token from the ``WWW-Authenticate`` header.
-3. ``create_payment`` against Agent Pay (SigV4-signed) -> payment token.
+2. Parse the payment requirements from the ``WWW-Authenticate`` header.
+3. ``create_payment_payload`` -> x402 core routes to the Agent Pay scheme, which
+   calls CreateAgentPayment (SigV4-signed) and returns a payment token.
 4. Retry the route with an ``x402`` Authorization header -> 200 + resource.
 5. List payments back from Agent Pay to confirm the record landed.
 
@@ -24,14 +26,17 @@ from __future__ import annotations
 import base64
 import json
 import re
-import uuid
 from typing import Any
 
 import httpx
 from botocore.credentials import Credentials  # type: ignore[import-untyped]
+from x402.schemas import PaymentRequired
 
-from fiat_extension_x402 import AgentPayClient
-from fiat_extension_x402.schemas import CreateAgentPaymentRequest
+from fiat_extension_x402 import (
+    AgentPayClientBuilder,
+    AgentPayClientOptions,
+    create_agent_pay_client,
+)
 
 SERVICE_URL = "http://localhost:3002"
 AGENT_PAY_BASE_URL = "http://localhost:3001"
@@ -49,7 +54,7 @@ def _parse_402(www_authenticate: str) -> dict[str, Any]:
     return json.loads(base64.b64decode(match.group(1)))  # type: ignore[no-any-return]
 
 
-def _pay_and_fetch(client: AgentPayClient, path: str) -> None:
+def _pay_and_fetch(buyer: AgentPayClientBuilder, path: str) -> None:
     """Run the 402 -> pay -> retry flow for a single protected route."""
     print(f"\n── GET {path} ───────────────────────────────")
 
@@ -59,30 +64,25 @@ def _pay_and_fetch(client: AgentPayClient, path: str) -> None:
     if resp.status_code != 402:
         raise RuntimeError(f"expected 402, got {resp.status_code}")
 
-    # Step 2: parse the payment requirements + quote token from the 402.
-    payment_required = _parse_402(resp.headers["WWW-Authenticate"])
-    requirements = payment_required["accepts"][0]
-    quote_token = requirements["extra"]["quoteToken"]
-    print(f"  [buyer] quote: {requirements['amount']} {requirements['asset']}")
+    # Step 2: parse the 402 body into the x402 PaymentRequired model.
+    body = _parse_402(resp.headers["WWW-Authenticate"])
+    payment_required = PaymentRequired.model_validate(body)
+    offer = payment_required.accepts[0]
+    print(f"  [buyer] quote: {offer.amount} {offer.asset}")
 
-    # Step 3: create the payment with Agent Pay (SigV4-signed by AgentPayClient).
-    created = client.create_payment(
-        CreateAgentPaymentRequest(
-            quote_token=quote_token,
-            client_token=str(uuid.uuid4()),
-        )
-    )
-    print(f"  [buyer] created payment {created.payment_id}")
+    # Step 3: x402 core selects the agent-pay offer and dispatches to the Agent
+    # Pay scheme, which calls CreateAgentPayment (SigV4-signed) for us.
+    payload = buyer.create_payment_payload(payment_required)
+    print(f"  [buyer] created payment {payload.payload['paymentId']}")
 
-    # Step 4: retry with the x402 Authorization header.
-    x_payment = {
-        "x402Version": 1,
-        "accepted": requirements,
-        "payload": {
-            "paymentToken": created.payment_token,
-            "paymentId": created.payment_id,
-        },
-    }
+    # Step 4: retry with the x402 Authorization header this demo's seller expects.
+    #
+    # This demo predates the standard header names, so it carries the payload
+    # under `Authorization: x402 <base64>`. A seller reading the standard
+    # PAYMENT-SIGNATURE header would instead let core do the encoding:
+    #
+    #     x402HTTPClientSync(buyer.client).encode_payment_signature_header(payload)
+    x_payment = payload.model_dump(by_alias=True, exclude_none=True)
     header = "x402 " + base64.b64encode(json.dumps(x_payment).encode()).decode()
     paid = httpx.get(f"{SERVICE_URL}{path}", headers={"Authorization": header})
     print(f"  [buyer] paid GET  -> {paid.status_code} {paid.reason_phrase}")
@@ -98,17 +98,22 @@ def main() -> None:
     print("🧪  Agent Pay x402 — local buyer flow")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-    client = AgentPayClient(
-        base_url=AGENT_PAY_BASE_URL,
-        credentials=_CREDENTIALS,
+    buyer = create_agent_pay_client(
+        AgentPayClientOptions(
+            agent_pay_id="local-demo-buyer",
+            agent_pay_base_url=AGENT_PAY_BASE_URL,
+            credentials=_CREDENTIALS,
+        )
     )
+    buyer.register_network("aws:base")
 
-    _pay_and_fetch(client, "/foo")
-    _pay_and_fetch(client, "/bar")
+    _pay_and_fetch(buyer, "/foo")
+    _pay_and_fetch(buyer, "/bar")
 
-    # Confirm the payments are queryable back from Agent Pay.
+    # Confirm the payments are queryable back from Agent Pay. Get/List are on the
+    # transport client, reachable through the builder.
     print("\n── ListAgentPayments ───────────────────────")
-    listed = client.list_payments()
+    listed = buyer.agent_pay_client.list_payments()
     print(f"  [buyer] {len(listed.payments)} payment(s) on record:")
     for summary in listed.payments:
         print(f"          {summary.payment_id}  product={summary.product_id}")

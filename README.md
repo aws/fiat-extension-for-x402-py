@@ -74,8 +74,14 @@ requirements = await enhance_payment_requirements(
 )
 
 # Return HTTP 402 with this body:
-# {"x402Version": 1, "accepts": [requirements]}
+# {"x402Version": 2, "accepts": [requirements]}
 ```
+
+> The requirements above carry `amount`/`asset`, which is the v2 shape, so the body must
+> declare `x402Version: 2`. A buyer parses the body with the model the version names, and
+> x402 core dispatches v1 and v2 through separate scheme registries — declaring the wrong
+> version makes the offer unpayable. v1 clients want `maxAmountRequired` + `resource`
+> instead.
 
 `enhance_payment_requirements` signs the quote token and embeds it at
 `requirements["extra"]["quoteToken"]`. It also replaces `payTo` with a sentinel and
@@ -117,49 +123,85 @@ signer = to_service_agent_pay_signer(private_key, public_jwk, "https://api.your-
 
 ## Buyer (AI agent): Authorize a payment
 
-When your agent receives a 402 response, pull the quote token out of the body and exchange
-it for a payment token via Agent Pay. The buyer authenticates with AWS SigV4 — charges
-land on this AWS account's bill.
+Agent Pay registers as an x402 payment scheme (`agent-pay`), so a buyer pays through the
+standard x402 client. Register the network once at startup, then hand the parsed 402 body
+to `create_payment_payload` — x402 core picks the matching offer, routes it to the Agent
+Pay scheme, and returns a complete payment payload. The buyer authenticates with AWS
+SigV4; charges land on this AWS account's bill.
 
 ```python
-from fiat_extension_x402 import AgentPayClient, create_env_credential_provider
-from fiat_extension_x402.schemas import CreateAgentPaymentRequest
-
-client = AgentPayClient(
-    base_url="https://prod.agentpay.marketplace.aws.dev",
-    credentials=create_env_credential_provider(),  # reads AWS_* from the environment
+from fiat_extension_x402 import (
+    AgentPayClientOptions,
+    create_agent_pay_client,
+    create_env_credential_provider,
 )
 
-# `response_402` is the parsed 402 JSON body the seller returned.
-quote_token = response_402["accepts"][0]["extra"]["quoteToken"]
+buyer = create_agent_pay_client(
+    AgentPayClientOptions(
+        agent_pay_id="YOUR_AWS_ACCOUNT_ID",
+        credentials=create_env_credential_provider(),  # reads AWS_* from the environment
+    )
+)
+buyer.register_network("aws:base")  # or "aws:*" for every AWS network
 
-# Calls POST /CreateAgentPayment; Agent Pay verifies the quote, captures, and signs a token.
-payment = client.create_payment(CreateAgentPaymentRequest(quote_token=quote_token))
-# payment.payment_id   -> "awsmp-..."
-# payment.payment_token -> "eyJ..."  (signed by Agent Pay)
+# `payment_required` is the parsed 402 body (an x402 PaymentRequired).
+# The SDK reads the quote token and calls POST /CreateAgentPayment for you.
+payload = buyer.create_payment_payload(payment_required)
+# payload.payload["paymentId"]    -> "awsmp-..."
+# payload.payload["paymentToken"] -> "eyJ..."  (signed by Agent Pay)
 ```
 
-Retry the original request with the payment token in an `X-Payment` header — a
-base64-encoded JSON payload the seller's verifier (or middleware) decodes:
+Retry the original request with the payload encoded into the standard x402 header. x402
+core does the encoding — `PAYMENT-SIGNATURE` for v2, `X-PAYMENT` for v1:
 
 ```python
-import base64
-import json
 import httpx
+from x402.http import x402HTTPClientSync
 
-x_payment = {
-    "x402Version": 1,
-    "accepted": response_402["accepts"][0],
-    "payload": {"paymentToken": payment.payment_token, "paymentId": payment.payment_id},
-}
-header = base64.b64encode(json.dumps(x_payment).encode()).decode()
-
-result = httpx.get(url, headers={"X-Payment": header})
+headers = x402HTTPClientSync(buyer.client).encode_payment_signature_header(payload)
+result = httpx.get(url, headers=headers)
 ```
+
+If the 402 body arrives as raw JSON, parse it into the x402 model first:
+
+```python
+from x402.schemas import PaymentRequired
+
+payment_required = PaymentRequired.model_validate(response_402)
+```
+
+### Direct API access
+
+`create_payment_payload` is the x402 entry point, but the Agent Pay API is also available
+directly — useful when you already hold a quote token, or need `get_payment` /
+`list_payments`:
+
+```python
+from fiat_extension_x402 import AgentPayClient
+from fiat_extension_x402.schemas import CreateAgentPaymentRequest, ListAgentPaymentsRequest
+
+client = AgentPayClient(credentials=create_env_credential_provider())
+
+quote_token = response_402["accepts"][0]["extra"]["quoteToken"]
+payment = client.create_payment(CreateAgentPaymentRequest(quote_token=quote_token))
+
+detail = client.get_payment(payment.payment_id)
+history = client.list_payments(ListAgentPaymentsRequest(max_results=25))
+
+# Confirm a token is genuinely signed by Agent Pay (signature + expiry only).
+claims = client.verify_payment_token(payment.payment_token)
+```
+
+`list_payments` also accepts a plain dict (`{"maxResults": 25}`) for convenience.
+
+`verify_payment_token` fetches Agent Pay's JWKS and checks the token's signature and
+expiry, for callers who only need to know a token is authentic. It does **not** check quote
+binding, amount, or DPoP — for that, verify through `AgentPayFacilitatorClient` (below).
 
 Pass `client_token=` to `CreateAgentPaymentRequest` for idempotency: reusing the same
 token returns the same payment, and reusing it with different parameters raises
-`IdempotencyConflictError`.
+`IdempotencyConflictError`. The client scheme generates a fresh `client_token` per call,
+so retrying the same requirements through `create_payment_payload` creates a new payment.
 
 ---
 
@@ -194,8 +236,48 @@ else:
 facilitator.settle(payment_id=payment_id, network="aws:base")
 ```
 
-The seller's public key (used to verify the quote token's signature) is discovered from
-the quote token's `iss` claim at `{iss}/.well-known/jwks.json`.
+### Locating your quote-signing key
+
+By default the seller's public key (used to verify the quote token's signature) is
+discovered from the quote token's `iss` claim at `{iss}/.well-known/jwks.json`. Pass a
+`seller_key_resolver` to override that:
+
+```python
+from fiat_extension_x402 import (
+    AgentPayFacilitatorClient,
+    JwksSellerKeyResolver,
+    KmsSellerKeyResolver,
+)
+
+# Verify against the public half of the KMS key you sign quotes with —
+# no JWKS to host, and no HTTP fetch on the verification path. The public key is
+# fetched from KMS once and cached.
+facilitator = AgentPayFacilitatorClient(
+    seller_key_resolver=KmsSellerKeyResolver(
+        kms_key_arn="arn:aws:kms:us-east-1:123456789012:key/your-key-id",
+        region="us-east-1",
+    )
+)
+
+# Or serve the JWKS from somewhere other than the token's `iss`.
+facilitator = AgentPayFacilitatorClient(
+    seller_key_resolver=JwksSellerKeyResolver(jwks_url="https://keys.your-service.com")
+)
+```
+
+An explicit resolver supersedes `iss` entirely — the issuer is never fetched. Both
+resolvers are also accepted by the resource-server builders as `seller_key_resolver`.
+
+### Advertising what you support
+
+`get_supported()` returns Agent Pay's `/.well-known/x402-supported` document. Pass
+`network_filter` to a facilitator client to narrow the advertised kinds to the networks
+you actually registered, so you don't claim networks you can't serve:
+
+```python
+facilitator = AgentPayFacilitatorClient(network_filter={"aws:base"})
+supported = facilitator.get_supported()   # {"kinds": [{... "network": "aws:base"}]}
+```
 
 ---
 
@@ -297,10 +379,31 @@ and presents a proof on each retry; the verifier checks the proof against the to
 `cnf.jkt` binding.
 
 ```python
-from fiat_extension_x402 import generate_dpop_keypair, to_dpop_jwk
-from fiat_extension_x402.schemas import CreateAgentPaymentRequest
+from fiat_extension_x402 import (
+    AgentPayClientOptions,
+    create_agent_pay_client,
+    generate_dpop_keypair,
+    to_dpop_jwk,
+)
 
 keypair = generate_dpop_keypair("ES256")  # ES256 / ES384 / ES512 (EC keys only)
+
+# Configure the key once; every payment the buyer creates is bound to it.
+buyer = create_agent_pay_client(
+    AgentPayClientOptions(
+        agent_pay_id="YOUR_AWS_ACCOUNT_ID",
+        credentials=create_env_credential_provider(),
+        dpop_jwk=to_dpop_jwk(keypair),
+    )
+)
+buyer.register_network("aws:base")
+payload = buyer.create_payment_payload(payment_required)
+```
+
+Or per call on the direct API:
+
+```python
+from fiat_extension_x402.schemas import CreateAgentPaymentRequest
 
 payment = client.create_payment(
     CreateAgentPaymentRequest(quote_token=quote_token, dpop_jwk=to_dpop_jwk(keypair))

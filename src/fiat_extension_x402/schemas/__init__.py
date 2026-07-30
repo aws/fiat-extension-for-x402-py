@@ -289,6 +289,21 @@ class PaymentSummary(_CamelModel):
     agreement_id: Optional[str] = None
 
 
+class ListAgentPaymentsSort(_CamelModel):
+    """Sort options for ``POST /ListAgentPayments``."""
+
+    sort_by: Optional[Literal["CreatedAt"]] = None
+    sort_order: Optional[Literal["Asc", "Desc"]] = None
+
+
+class ListAgentPaymentsRequest(_CamelModel):
+    """Request body for ``POST /ListAgentPayments``."""
+
+    sort: Optional[ListAgentPaymentsSort] = None
+    max_results: Optional[int] = None
+    next_token: Optional[str] = None
+
+
 class ListAgentPaymentsResponse(_CamelModel):
     """Response from ``POST /ListAgentPayments`` (200)."""
 
@@ -390,7 +405,9 @@ __all__ = [
     "DpopJwk",
     "ErrorResponse",
     "GetAgentPaymentResponse",
+    "ListAgentPaymentsRequest",
     "ListAgentPaymentsResponse",
+    "ListAgentPaymentsSort",
     "PaymentAmount",
     "PaymentContext",
     "PaymentDetail",

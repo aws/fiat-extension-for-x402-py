@@ -7,22 +7,42 @@ Handles HTTP communication with the AWS Marketplace Agent Pay Service.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, Union, runtime_checkable
 
 import httpx
+import jwt as pyjwt
 from botocore.credentials import Credentials  # type: ignore[import-untyped]
 
 from fiat_extension_x402.auth import Authenticator, AwsSigV4Authenticator, SignedRequest
+from fiat_extension_x402.constants import AGENT_PAY_JWKS_ACCESS_KEY, WELL_KNOWN_JWKS_PATH
 from fiat_extension_x402.exceptions import IdempotencyConflictError, ValidationError
 from fiat_extension_x402.schemas import (
     CreateAgentPaymentRequest,
     CreateAgentPaymentResponse,
     GetAgentPaymentResponse,
+    ListAgentPaymentsRequest,
     ListAgentPaymentsResponse,
+    PaymentTokenPayload,
 )
+from fiat_extension_x402.security import ALLOWED_ALGORITHMS
 
 # Default Agent Pay endpoint (production).
 DEFAULT_BASE_URL = "https://prod.agentpay.marketplace.aws.dev"
+
+
+@runtime_checkable
+class AgentPayClientForClient(Protocol):
+    """The buyer-side Agent Pay contract.
+
+    Deliberately one method wide: creating a payment is all the client scheme
+    needs. ``get_payment``/``list_payments`` are concrete conveniences on
+    :class:`AgentPayClient` rather than part of the buyer contract, so a test
+    double only has to implement this one call.
+    """
+
+    def create_payment(self, request: CreateAgentPaymentRequest) -> CreateAgentPaymentResponse:
+        """Exchange a seller-signed quote token for a signed payment token."""
+        ...
 
 
 class AgentPayClient:
@@ -165,17 +185,25 @@ class AgentPayClient:
 
         return result
 
-    def list_payments(self, request: Optional[dict[str, Any]] = None) -> ListAgentPaymentsResponse:
+    def list_payments(
+        self,
+        request: Optional[Union[ListAgentPaymentsRequest, dict[str, Any]]] = None,
+    ) -> ListAgentPaymentsResponse:
         """List payments.
 
         Maps to: POST /ListAgentPayments
 
-        :param request: Optional request body with filters/pagination.
+        :param request: Optional filters/pagination, as a
+            :class:`~fiat_extension_x402.schemas.ListAgentPaymentsRequest` or an
+            equivalent dict of camelCase keys.
         :returns: Parsed ``ListAgentPaymentsResponse``.
         :raises ValidationError: on authorization or request failure.
         """
         url = f"{self._base_url}/ListAgentPayments"
-        body_dict: dict[str, Any] = request or {}
+        if isinstance(request, ListAgentPaymentsRequest):
+            body_dict: dict[str, Any] = request.model_dump(by_alias=True, exclude_none=True)
+        else:
+            body_dict = request or {}
 
         try:
             body_bytes = httpx.Request("POST", url, json=body_dict).content
@@ -215,5 +243,53 @@ class AgentPayClient:
 
         return result
 
+    def verify_payment_token(self, token: str) -> PaymentTokenPayload:
+        """Verify a payment token's signature against Agent Pay's public keys.
 
-__all__ = ["AgentPayClient", "DEFAULT_BASE_URL"]
+        Fetches Agent Pay's JWKS and checks the JWT signature, so callers who
+        only need to confirm a token is genuine do not have to stand up a
+        facilitator or supply a key themselves. For full payment verification —
+        quote binding, amounts, expiry, DPoP — use
+        :class:`~fiat_extension_x402.facilitator.AgentPayFacilitatorClient`.
+
+        :param token: The payment token JWT to verify.
+        :returns: The verified claims.
+        :raises ValidationError: if the token is malformed, expired, unsigned by
+            Agent Pay, or missing required claims.
+        """
+        try:
+            with httpx.Client() as client:
+                response = client.get(
+                    f"{self._base_url}{WELL_KNOWN_JWKS_PATH}",
+                    headers={"x-agentpay-key": AGENT_PAY_JWKS_ACCESS_KEY},
+                )
+            if not 200 <= response.status_code < 300:
+                raise ValidationError(
+                    f"Failed to fetch Agent Pay public keys ({response.status_code})"
+                )
+
+            jwks = pyjwt.PyJWKSet.from_dict(response.json())
+            header = pyjwt.get_unverified_header(token)
+            kid = header.get("kid")
+            key = next((k for k in jwks.keys if k.key_id == kid), None)
+            if key is None:
+                raise ValidationError(f"No Agent Pay signing key matches kid: {kid}")
+
+            # Expiry is enforced (aud is not — Agent Pay's audience is the
+            # seller's service URL, which this method has no way to know).
+            claims = pyjwt.decode(
+                token,
+                key.key,
+                algorithms=ALLOWED_ALGORITHMS,
+                options={"verify_exp": True, "verify_aud": False},
+            )
+            result = PaymentTokenPayload.model_validate(claims)
+        except ValidationError:
+            raise
+        except Exception as error:  # noqa: BLE001 - normalize all other failures
+            raise ValidationError(f"Failed to verify payment token: {error}") from error
+
+        return result
+
+
+__all__ = ["AgentPayClient", "AgentPayClientForClient", "DEFAULT_BASE_URL"]

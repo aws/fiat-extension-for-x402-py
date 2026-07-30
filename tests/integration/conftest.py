@@ -8,9 +8,7 @@ HTTP (the seller and Agent Pay JWKS endpoints) served from in-memory ``respx``
 mocks. No network, no credentials, no environment gating: these run as part of
 the default unit suite.
 
-This is the in-process analog of the reference SDK's ``test/integrations`` suite
-(the framework-driven client/server/facilitator round-trips). The Python SDK has
-a flatter shape, so the harness composes the equivalent behavior directly:
+The harness composes the full flow directly:
 ``enhance_payment_requirements`` (seller) -> a mock Agent Pay issuing a payment
 token -> ``AgentPayFacilitatorClient.verify`` / ``settle`` (seller).
 """
@@ -18,9 +16,11 @@ token -> ``AgentPayFacilitatorClient.verify`` / ``settle`` (seller).
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import jwt as pyjwt
@@ -37,10 +37,21 @@ _AGENT_PAY_JWKS_URL = f"{AGENT_PAY_JWKS_BASE_URL.rstrip('/')}{WELL_KNOWN_JWKS_PA
 _SERVICE_URL = "https://seller.integration.example.com"
 _SELLER_JWKS_URL = f"{_SERVICE_URL}{WELL_KNOWN_JWKS_PATH}"
 _AGENT_PAY_ISS = "awsmp-agentpay.amazonaws.com"
+_AGENT_PAY_BASE_URL = "https://agentpay.integration.example.com"
 
 
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _jwk_thumbprint(jwk: dict[str, Any]) -> str:
+    """RFC 7638 JWK thumbprint over an EC key's required members."""
+    canonical = json.dumps(
+        {"crv": jwk["crv"], "kty": jwk["kty"], "x": jwk["x"], "y": jwk["y"]},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return _b64url(hashlib.sha256(canonical.encode()).digest())
 
 
 def _ec384_keypair(kid: str) -> tuple[EllipticCurvePrivateKey, dict[str, Any]]:
@@ -68,6 +79,8 @@ class IntegrationHarness:
     _agent_pay_key: EllipticCurvePrivateKey
     _agent_pay_jwk: dict[str, Any]
     _seller_jwk: dict[str, Any]
+    # Request bodies received by the mocked CreateAgentPayment endpoint.
+    create_payment_requests: list[dict[str, Any]] = field(default_factory=list)
 
     async def build_quote(
         self,
@@ -135,6 +148,63 @@ class IntegrationHarness:
         respx_mock.get(_SELLER_JWKS_URL).mock(
             return_value=httpx.Response(200, json={"keys": [self._seller_jwk]})
         )
+
+    def mock_create_agent_payment(self, respx_mock: Any) -> None:
+        """Mock Agent Pay's ``POST /CreateAgentPayment``.
+
+        Lets the real buyer path (client scheme -> ``AgentPayClient``) run over
+        HTTP instead of hand-minting a payment token: the endpoint reads the
+        submitted quote token and issues a token bound to it, exactly as the
+        service does.
+        """
+        import httpx
+
+        def _respond(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            quote_token = body["quoteToken"]
+            dpop_jwk = body.get("dpopJwk")
+            cnf_jkt = _jwk_thumbprint(dpop_jwk) if dpop_jwk else None
+            payment_id = f"awsmp-{uuid.uuid4()}"
+            payment_token = self.issue_payment_token(
+                quote_token, sub=self.agent_pay_id, cnf_jkt=cnf_jkt
+            )
+            self.create_payment_requests.append(body)
+            return httpx.Response(
+                200,
+                json={
+                    "paymentId": payment_id,
+                    "paymentToken": payment_token,
+                    "createdAt": "2026-07-28T00:00:00Z",
+                },
+            )
+
+        respx_mock.post(f"{_AGENT_PAY_BASE_URL}/CreateAgentPayment").mock(side_effect=_respond)
+
+    def agent_pay_config(self) -> Any:
+        """An ``AgentPayConfig`` pointed at the mocked Agent Pay endpoint."""
+        from fiat_extension_x402 import AgentPayConfig
+
+        return AgentPayConfig(base_url=_AGENT_PAY_BASE_URL)
+
+    def build_buyer(self, respx_mock: Any, **scheme_kwargs: Any) -> Any:
+        """Build a network-registered x402 buyer client for the mocked service.
+
+        Returns the :class:`AgentPayClientBuilder`, whose
+        ``create_payment_payload`` dispatches through x402 core.
+        """
+        from fiat_extension_x402 import AgentPayClientOptions, create_agent_pay_client
+
+        self.mock_create_agent_payment(respx_mock)
+        builder = create_agent_pay_client(
+            AgentPayClientOptions(
+                agent_pay_id=self.agent_pay_id,
+                agent_pay_base_url=_AGENT_PAY_BASE_URL,
+                **scheme_kwargs,
+            )
+        )
+        builder.register_network("aws:base")
+        builder.register_network("eip155:8453")
+        return builder
 
 
 @pytest.fixture
