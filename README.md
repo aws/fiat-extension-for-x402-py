@@ -99,6 +99,30 @@ Flask is the same with `x402ResourceServerSync`, `x402FacilitatorSync` and
 The signer's `service_url` becomes the quote token's `iss` claim and must be the
 seller URL registered for the listing.
 
+### Product ID
+
+Set each route's `pay_to` to the seller's **AWS Marketplace product ID**. The
+server scheme signs it into the quote as `payTo` and as `settlement.product_id`,
+which the payment service requires to settle against the listing. On the wire,
+`payTo` is replaced by a placeholder; the signed quote carries the real value.
+
+Other quote details come from the route's `extra`:
+
+```python
+PaymentOption(
+    scheme="exact",
+    network="aws:base",
+    pay_to="prod-abc123",            # AWS Marketplace product ID
+    price="$0.01",                   # at most 8 decimal places
+    extra={
+        "description": "Current weather",
+        "dimensions": {"calls": 1},
+        "settlement": {"mode": "immediate"},   # product_id is added for you
+        "reference": "weather-v1",
+    },
+)
+```
+
 ### Seller key resolution
 
 The facilitator verifies each quote with the seller's own public key. The key is

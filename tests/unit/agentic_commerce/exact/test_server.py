@@ -170,6 +170,14 @@ class TestParsePrice:
     def test_small_float_uses_plain_decimal_notation(self) -> None:
         assert _scheme().parse_price(1e-7, "aws:base").amount == "0.0000001"
 
+    def test_eight_decimal_places_accepted(self) -> None:
+        assert _scheme().parse_price("$0.00000001", "aws:base").amount == "0.00000001"
+
+    @pytest.mark.parametrize("price", ["$0.000000001", 1e-9])
+    def test_more_than_eight_decimal_places_raises(self, price: Any) -> None:
+        with pytest.raises(ValidationError, match="at most 8 decimal places"):
+            _scheme().parse_price(price, "aws:base")
+
 
 class TestEnhancePaymentRequirements:
     def test_returns_requirements_with_quote(self) -> None:

@@ -9,7 +9,7 @@ Run::
 
     export SELLER_KMS_KEY_ARN=arn:aws:kms:us-east-1:111122223333:alias/my-quote-key
     export SELLER_SERVICE_URL=https://api.example.com
-    export SELLER_PAY_TO=prod-example123
+    export SELLER_PRODUCT_ID=prod-example123
     flask --app examples.flask_seller run --port 8000
 """
 
@@ -34,7 +34,7 @@ from fiat_extension_x402 import (
 KMS_KEY_ARN = os.environ["SELLER_KMS_KEY_ARN"]
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SERVICE_URL = os.environ["SELLER_SERVICE_URL"]
-PAY_TO = os.environ["SELLER_PAY_TO"]
+PRODUCT_ID = os.environ["SELLER_PRODUCT_ID"]
 
 signer = KmsQuoteSigner(
     KmsQuoteSignerConfig(key_arn=KMS_KEY_ARN, region=REGION, service_url=SERVICE_URL)
@@ -45,7 +45,7 @@ server = register_exact_agentic_commerce_server(x402ResourceServerSync(facilitat
 
 routes = {
     "GET /weather": RouteConfig(
-        accepts=PaymentOption(scheme="exact", network="aws:base", pay_to=PAY_TO, price="$0.01"),
+        accepts=PaymentOption(scheme="exact", network="aws:base", pay_to=PRODUCT_ID, price="$0.01"),
         description="Current weather",
         mime_type="application/json",
     ),

@@ -115,16 +115,48 @@ class TestQuoteClaims:
         }
         enhance_payment_requirements(_requirements(extra=extra), signer)
         claims = signer.signed[0]
-        for name in ("description", "dimensions", "settlement", "support", "terms"):
+        for name in ("description", "dimensions", "support", "terms"):
             assert claims[name] == extra[name]
+        assert claims["settlement"] == {"mode": "immediate", "product_id": "seller-1"}
         assert "unrelated" not in claims
 
     def test_optional_claims_absent_or_none_are_omitted(self) -> None:
         signer = _RecordingSigner()
         enhance_payment_requirements(_requirements(extra={"description": None}), signer)
         claims = signer.signed[0]
-        for name in ("description", "dimensions", "settlement", "support", "terms"):
+        for name in ("description", "dimensions", "support", "terms"):
             assert name not in claims
+
+
+class TestProductId:
+    def test_settlement_product_id_is_pay_to(self) -> None:
+        signer = _RecordingSigner()
+        enhance_payment_requirements(_requirements(payTo="prod-abc123"), signer)
+        assert signer.signed[0]["settlement"] == {"product_id": "prod-abc123"}
+
+    def test_matching_explicit_product_id_is_accepted(self) -> None:
+        signer = _RecordingSigner()
+        extra = {"settlement": {"product_id": "prod-abc123"}}
+        enhance_payment_requirements(_requirements(payTo="prod-abc123", extra=extra), signer)
+        assert signer.signed[0]["settlement"] == {"product_id": "prod-abc123"}
+
+    def test_conflicting_product_id_raises(self) -> None:
+        extra = {"settlement": {"product_id": "prod-other"}}
+        with pytest.raises(ValidationError, match="must match payTo"):
+            enhance_payment_requirements(
+                _requirements(payTo="prod-abc123", extra=extra), _RecordingSigner()
+            )
+
+    @pytest.mark.parametrize("pay_to", ["", "   ", None])
+    def test_missing_pay_to_raises(self, pay_to: Any) -> None:
+        with pytest.raises(ValidationError, match="product ID"):
+            enhance_payment_requirements(_requirements(payTo=pay_to), _RecordingSigner())
+
+    def test_route_extra_is_not_modified(self) -> None:
+        extra: dict[str, Any] = {"settlement": {"mode": "immediate"}}
+        enhanced = enhance_payment_requirements(_requirements(extra=extra), _RecordingSigner())
+        assert extra == {"settlement": {"mode": "immediate"}}
+        assert enhanced["extra"]["settlement"] == {"mode": "immediate"}
 
 
 class TestEnhancedRequirements:

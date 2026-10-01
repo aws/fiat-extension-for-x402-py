@@ -7,9 +7,9 @@ Description: >
   AWS Marketplace Agentic Commerce. Code is uploaded separately (deploy.sh).
 
 Parameters:
-  PayTo:
+  ProductId:
     Type: String
-    Description: The seller's payee identifier (its product id).
+    Description: The seller's AWS Marketplace product ID (route payTo, quote settlement.product_id).
   ServiceUrl:
     Type: String
     Default: ""
@@ -73,7 +73,7 @@ Resources:
       Environment:
         Variables:
           SELLER_KMS_KEY_ARN: !GetAtt QuoteSigningKey.Arn
-          SELLER_PAY_TO: !Ref PayTo
+          SELLER_PRODUCT_ID: !Ref ProductId
           SELLER_SERVICE_URL: !Ref ServiceUrl
 
   FunctionLogGroup:

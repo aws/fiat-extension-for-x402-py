@@ -40,6 +40,9 @@ _MONEY_PATTERN = re.compile(r"^\$?(\d+(?:\.\d+)?)\s*([A-Z]{3})?$")
 
 _DEFAULT_DPOP_MAX_AGE_SECONDS = 60
 
+# The payment service rejects prices with more decimal places than this.
+_MAX_PRICE_DECIMAL_PLACES = 8
+
 
 class ExactAgenticCommerceScheme:
     """``exact`` server scheme for AWS Marketplace Agentic Commerce.
@@ -102,6 +105,10 @@ class ExactAgenticCommerceScheme:
         value = Decimal(amount)  # Always parses: a str(number) or a regex-matched decimal.
         if not value.is_finite() or value < 0:
             raise ValidationError(f"Price must be a finite, non-negative amount: {price!r}")
+        if -value.as_tuple().exponent > _MAX_PRICE_DECIMAL_PLACES:  # type: ignore[operator]
+            raise ValidationError(
+                f"Price may have at most {_MAX_PRICE_DECIMAL_PLACES} decimal places: {price!r}"
+            )
         if isinstance(price, (int, float)):
             # Plain decimal notation, never exponent form ("1E-7").
             amount = format(value, "f")

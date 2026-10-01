@@ -48,10 +48,11 @@ decimal fiat amount, not atomic units.
 | `aud` | `aws:marketplace` |
 | `iat`, `exp` | Issue time and expiry (`maxTimeoutSeconds`, default 300) |
 | `jti` | Unique id |
-| `price` | `{"amount": "0.01", "currency": "USD"}` |
-| `payTo` | The seller's payee identifier |
+| `price` | `{"amount": "0.01", "currency": "USD"}` (at most 8 decimal places) |
+| `payTo` | The seller's AWS Marketplace product ID (route `pay_to`) |
+| `settlement` | `extra.settlement` plus `product_id` (the route `pay_to`); required by the payment service |
 | `reference` | `extra.reference`, default `RESOURCE` |
-| `description`, `dimensions`, `settlement`, `support`, `terms` | Copied from `extra` when present |
+| `description`, `dimensions`, `support`, `terms` | Copied from `extra` when present |
 
 ## Payment payload
 

@@ -17,7 +17,7 @@ from fiat_extension_x402.exceptions import ValidationError
 from fiat_extension_x402.signers.protocol import QuoteSigner
 
 # Optional route details copied from ``extra`` into the quote when present.
-_OPTIONAL_QUOTE_CLAIMS = ("description", "dimensions", "settlement", "support", "terms")
+_OPTIONAL_QUOTE_CLAIMS = ("description", "dimensions", "support", "terms")
 
 
 def enhance_payment_requirements(
@@ -26,6 +26,11 @@ def enhance_payment_requirements(
 ) -> dict[str, Any]:
     """Sign a quote token for the requirements and embed it in ``extra.quoteToken``.
 
+    ``payTo`` is the seller's AWS Marketplace product ID. It is signed into the
+    quote as ``payTo`` and as ``settlement.product_id``, which the payment service
+    requires to settle the payment against the listing. Other ``settlement``
+    fields can be supplied in ``extra.settlement``.
+
     The returned requirements carry the sentinel ``payTo`` and a
     ``maxTimeoutSeconds`` equal to the quote's validity: the signed quote is the
     authoritative source for both.
@@ -33,7 +38,8 @@ def enhance_payment_requirements(
     :param payment_requirements: Base x402 payment requirements (wire field names).
     :param signer: Signer for the quote token. Its service URL becomes ``iss``.
     :returns: Enhanced payment requirements.
-    :raises ValidationError: if the signer's service URL is empty.
+    :raises ValidationError: if the signer's service URL or ``payTo`` is empty, or
+        ``extra.settlement.product_id`` disagrees with ``payTo``.
     """
     issuer = signer.get_service_url()
     if not issuer or not issuer.strip():
@@ -43,7 +49,16 @@ def enhance_payment_requirements(
             "token's 'iss' claim, which the service requires."
         )
 
+    product_id = str(payment_requirements.get("payTo") or "").strip()
+    if not product_id:
+        raise ValidationError("payTo must be the seller's AWS Marketplace product ID")
+
     extra: dict[str, Any] = dict(payment_requirements.get("extra") or {})
+    settlement: dict[str, Any] = dict(extra.get("settlement") or {})
+    if settlement.setdefault("product_id", product_id) != product_id:
+        raise ValidationError(
+            "extra.settlement.product_id must match payTo (the AWS Marketplace product ID)"
+        )
     now = int(time())
     validity = payment_requirements.get("maxTimeoutSeconds") or DEFAULT_QUOTE_VALIDITY_SECONDS
 
@@ -57,8 +72,9 @@ def enhance_payment_requirements(
             "amount": payment_requirements["amount"],
             "currency": payment_requirements.get("asset", "").replace("iso4217:", ""),
         },
-        "payTo": payment_requirements["payTo"],
+        "payTo": product_id,
         "reference": extra.get("reference") or "RESOURCE",
+        "settlement": settlement,
     }
     for name in _OPTIONAL_QUOTE_CLAIMS:
         if extra.get(name) is not None:

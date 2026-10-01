@@ -9,7 +9,7 @@
 set -euo pipefail
 
 STACK="${1:?stack name}"
-PAY_TO="${2:?payee identifier (product id)}"
+PRODUCT_ID="${2:?AWS Marketplace product id}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 BUILD="$(mktemp -d)"
@@ -26,7 +26,7 @@ cp "$HERE/app.py" "$BUILD/pkg/"
 
 echo "==> Deploying stack $STACK"
 aws cloudformation deploy --stack-name "$STACK" --template-file "$HERE/template.yaml" \
-  --capabilities CAPABILITY_IAM --parameter-overrides "PayTo=$PAY_TO" --no-fail-on-empty-changeset
+  --capabilities CAPABILITY_IAM --parameter-overrides "ProductId=$PRODUCT_ID" --no-fail-on-empty-changeset
 
 output() {
   aws cloudformation describe-stacks --stack-name "$STACK" \
@@ -42,7 +42,7 @@ aws lambda wait function-updated --function-name "$FUNCTION"
 
 echo "==> Setting quote issuer to $URL"
 aws cloudformation deploy --stack-name "$STACK" --template-file "$HERE/template.yaml" \
-  --capabilities CAPABILITY_IAM --parameter-overrides "PayTo=$PAY_TO" "ServiceUrl=$URL" \
+  --capabilities CAPABILITY_IAM --parameter-overrides "ProductId=$PRODUCT_ID" "ServiceUrl=$URL" \
   --no-fail-on-empty-changeset
 aws lambda wait function-updated --function-name "$FUNCTION"
 

@@ -6,7 +6,7 @@ Lambda environment:
 
 * ``SELLER_KMS_KEY_ARN``: KMS key (ECC_NIST_P384, SIGN_VERIFY) that signs quotes.
 * ``SELLER_SERVICE_URL``: the seller's public URL; the quote token's ``iss``.
-* ``SELLER_PAY_TO``: the seller's payee identifier (its product id).
+* ``SELLER_PRODUCT_ID``: the seller's AWS Marketplace product ID.
 * ``PAYMENT_TOKEN_JWKS_HEADERS`` (optional): JSON object of headers sent when
   fetching the payment service's JWKS (an access header issued at onboarding).
 """
@@ -36,7 +36,7 @@ from fiat_extension_x402 import (
 KMS_KEY_ARN = os.environ["SELLER_KMS_KEY_ARN"]
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SERVICE_URL = os.environ["SELLER_SERVICE_URL"]
-PAY_TO = os.environ["SELLER_PAY_TO"]
+PRODUCT_ID = os.environ["SELLER_PRODUCT_ID"]
 JWKS_HEADERS = json.loads(os.environ.get("PAYMENT_TOKEN_JWKS_HEADERS") or "{}")
 
 signer = KmsQuoteSigner(
@@ -51,7 +51,13 @@ server = register_exact_agentic_commerce_server(x402ResourceServer(facilitator),
 
 routes = {
     "GET /weather": RouteConfig(
-        accepts=PaymentOption(scheme="exact", network="aws:base", pay_to=PAY_TO, price="$0.01"),
+        accepts=PaymentOption(
+            scheme="exact",
+            network="aws:base",
+            pay_to=PRODUCT_ID,  # signed into the quote as payTo and settlement.product_id
+            price="$0.01",
+            extra={"description": "Current weather", "reference": "weather-v1"},
+        ),
         description="Current weather",
         mime_type="application/json",
     ),
