@@ -1,82 +1,103 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Public import-surface tests.
-
-Asserts that the documented public API resolves from the package root. This is the
-Guards the symbols
-listed in ``fiat_extension_x402.__all__`` rather than the reference's framework
-scheme classes (which the Python SDK's flatter design does not expose).
-"""
+"""Tests for the package's public API surface."""
 
 from __future__ import annotations
 
-import fiat_extension_x402 as agent_pay
+import importlib
+
+import pytest
+
+import fiat_extension_x402
+
+EXPECTED_EXPORTS = {
+    "AGENTIC_COMMERCE_CAIP_FAMILY",
+    "ALLOWED_ALGORITHMS",
+    "AgenticCommerceError",
+    "AgenticCommerceVerifier",
+    "DEFAULT_ASSET",
+    "DEFAULT_NETWORK",
+    "DPoPError",
+    "DPoPNonceStore",
+    "DPoPVerificationOptions",
+    "ExactAgenticCommerceFacilitatorScheme",
+    "ExactAgenticCommerceServerScheme",
+    "ExpiryError",
+    "JwksSellerKeyResolver",
+    "KmsQuoteSigner",
+    "KmsQuoteSignerConfig",
+    "KmsSellerKeyResolver",
+    "LocalQuoteSigner",
+    "MismatchError",
+    "PAYMENT_TOKEN_ISSUER",
+    "QuoteSigner",
+    "SCHEME_EXACT",
+    "SENTINEL_PAY_TO",
+    "SellerKeyResolver",
+    "SignatureError",
+    "SigningError",
+    "StaticSellerKeyResolver",
+    "ValidationError",
+    "VerificationResult",
+    "__version__",
+    "compute_jwk_thumbprint",
+    "decode_quote_token",
+    "enhance_payment_requirements",
+    "extract_dpop_thumbprint",
+    "parse_money_to_decimal",
+    "register_exact_agentic_commerce_facilitator",
+    "register_exact_agentic_commerce_server",
+    "secure_compare",
+    "validate_url",
+    "verify_dpop_proof",
+    "verify_payment_token",
+    "verify_quote_token",
+}
+
+SUBMODULES = [
+    "fiat_extension_x402.agentic_commerce",
+    "fiat_extension_x402.agentic_commerce.exact",
+    "fiat_extension_x402.constants",
+    "fiat_extension_x402.dpop",
+    "fiat_extension_x402.exceptions",
+    "fiat_extension_x402.security",
+    "fiat_extension_x402.signers",
+    "fiat_extension_x402.utils",
+]
 
 
-class TestPublicConstants:
-    def test_constant_values(self) -> None:
-        from fiat_extension_x402.constants import (
-            AGENT_PAY_CAIP_FAMILY,
-            AGENT_PAY_SCHEME,
-            SETTLEMENT_CYCLES,
-            SETTLEMENT_METHODS,
-        )
-
-        assert AGENT_PAY_SCHEME == "agent-pay"
-        assert AGENT_PAY_CAIP_FAMILY == "aws:*"
-        assert SETTLEMENT_METHODS is not None
-        assert SETTLEMENT_CYCLES is not None
+def test_all_matches_expected_exports() -> None:
+    assert set(fiat_extension_x402.__all__) == EXPECTED_EXPORTS
+    assert len(fiat_extension_x402.__all__) == len(EXPECTED_EXPORTS)
 
 
-class TestPublicExports:
-    def test_client_and_server(self) -> None:
-        assert agent_pay.AgentPayClient is not None
-        assert agent_pay.enhance_payment_requirements is not None
+@pytest.mark.parametrize("name", sorted(EXPECTED_EXPORTS))
+def test_export_is_importable(name: str) -> None:
+    assert getattr(fiat_extension_x402, name) is not None
 
-    def test_client_scheme(self) -> None:
-        """The x402 framework buyer path is part of the public surface."""
-        assert agent_pay.AgentPayClientScheme is not None
-        assert agent_pay.AgentPayClientForClient is not None
-        assert agent_pay.AgentPayConfig is not None
-        assert agent_pay.create_agent_pay_client is not None
 
-    def test_facilitator(self) -> None:
-        assert agent_pay.AgentPayFacilitatorClient is not None
-        assert agent_pay.InProcessFacilitatorClient is not None
+def test_version() -> None:
+    assert fiat_extension_x402.__version__ == "0.1.0"
 
-    def test_signer_functions(self) -> None:
-        assert agent_pay.to_service_agent_pay_signer is not None
-        assert agent_pay.to_agent_pay_signer is not None
 
-    def test_error_classes(self) -> None:
-        assert agent_pay.AgentPayError is not None
-        assert agent_pay.ValidationError is not None
-        assert agent_pay.SignatureError is not None
-        assert agent_pay.ExpiryError is not None
-        assert agent_pay.MismatchError is not None
-        assert agent_pay.DPoPError is not None
+def test_constant_values() -> None:
+    assert fiat_extension_x402.SCHEME_EXACT == "exact"
+    assert fiat_extension_x402.AGENTIC_COMMERCE_CAIP_FAMILY == "aws:*"
+    assert fiat_extension_x402.DEFAULT_NETWORK == "aws:base"
+    assert fiat_extension_x402.DEFAULT_ASSET == "iso4217:USD"
 
-    def test_utility_functions(self) -> None:
-        assert agent_pay.decode_quote_token is not None
-        assert agent_pay.verify_quote_token is not None
-        assert agent_pay.verify_payment_token is not None
-        assert agent_pay.extract_quote_from_payment is not None
-        assert agent_pay.generate_transaction_id is not None
-        assert agent_pay.parse_money_to_decimal is not None
 
-    def test_dpop_functions(self) -> None:
-        assert agent_pay.generate_dpop_keypair is not None
-        assert agent_pay.create_dpop_proof is not None
-        assert agent_pay.verify_dpop_proof is not None
-        assert agent_pay.compute_jwk_thumbprint is not None
+@pytest.mark.parametrize("module_name", ["fiat_extension_x402", *SUBMODULES])
+def test_no_legacy_product_names_exported(module_name: str) -> None:
+    module = importlib.import_module(module_name)
+    for name in getattr(module, "__all__", dir(module)):
+        lowered = name.lower()
+        assert "agentpay" not in lowered, name
+        assert "agent_pay" not in lowered, name
 
-    def test_auth_and_discovery(self) -> None:
-        assert agent_pay.AwsSigV4Authenticator is not None
-        assert agent_pay.create_authenticator is not None
-        assert agent_pay.discover_agent_pay_endpoints is not None
-        assert agent_pay.register_network is not None
 
-    def test_all_exports_resolve(self) -> None:
-        """Every name in __all__ resolves to a real attribute on the package."""
-        for name in agent_pay.__all__:
-            assert getattr(agent_pay, name) is not None, name
+@pytest.mark.parametrize("module_name", SUBMODULES)
+def test_submodule_all_names_resolve(module_name: str) -> None:
+    module = importlib.import_module(module_name)
+    for name in module.__all__:
+        assert hasattr(module, name), f"{module_name}.{name}"

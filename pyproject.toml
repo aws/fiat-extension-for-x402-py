@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fiat-extension-for-x402"
-version = "1.0.0"
+version = "0.1.0"
 description = "Python SDK for the x402 payment protocol's fiat-currency extension"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Amazon Web Services" }]
@@ -13,17 +13,16 @@ requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27.0",
     "pyjwt[crypto]>=2.8.0",
-    "pydantic>=2.0",
     "boto3>=1.34.0",
     "cryptography>=42.0.0",
-    # x402 protocol core: supplies the client/server/facilitator scheme
-    # contracts this package extends with the Agent Pay ("agent-pay") scheme.
-    "x402>=2.17.0",
+    # x402 protocol core: resource server, facilitator, HTTP middleware and the
+    # scheme contracts implemented here. 2.20 introduced payment flows.
+    "x402>=2.20.0,<3",
 ]
 
 [project.optional-dependencies]
-flask = ["flask>=3.0"]
-fastapi = ["fastapi>=0.110"]
+flask = ["x402[flask]>=2.20.0,<3"]
+fastapi = ["x402[fastapi]>=2.20.0,<3"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio",
@@ -33,6 +32,8 @@ dev = [
     "moto",
     "respx>=0.21.0",
     "build",
+    "flask>=3.0",
+    "fastapi>=0.115",
 ]
 
 [project.urls]
@@ -48,10 +49,6 @@ strict = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-m 'not e2e'"
-markers = [
-    "e2e: end-to-end tests that hit the live Agent Pay endpoint (deselected by default; run with -m e2e)",
-]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fiat_extension_x402"]
@@ -59,7 +56,6 @@ packages = ["src/fiat_extension_x402"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
-    "/tests",
     "/README.md",
     "/LICENSE",
     "/NOTICE",

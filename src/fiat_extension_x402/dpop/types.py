@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Type definitions for DPoP proof creation and verification."""
+"""Type definitions for DPoP proof verification."""
 
 from __future__ import annotations
 
@@ -16,15 +16,6 @@ class DPoPProofPayload(TypedDict, total=False):
     iat: int
     ath: str
     nonce: str
-
-
-class DPoPProofOptions(TypedDict, total=False):
-    """Options for creating a DPoP proof."""
-
-    htm: str
-    htu: str
-    access_token: Optional[str]
-    nonce: Optional[str]
 
 
 class DPoPVerificationOptions(TypedDict, total=False):
@@ -51,7 +42,6 @@ class DPoPNonceStore(Protocol):
 
 __all__ = [
     "DPoPNonceStore",
-    "DPoPProofOptions",
     "DPoPProofPayload",
     "DPoPVerificationOptions",
 ]

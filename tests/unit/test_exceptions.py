@@ -5,26 +5,27 @@
 from __future__ import annotations
 
 from fiat_extension_x402.exceptions import (
-    AgentPayError,
+    AgenticCommerceError,
     DPoPError,
     ExpiryError,
     MismatchError,
     SignatureError,
+    SigningError,
     ValidationError,
 )
 
 
-class TestAgentPayError:
+class TestAgenticCommerceError:
     def test_message_code_and_details(self) -> None:
-        err = AgentPayError("Test error", "TEST_ERROR", {"field": "value"})
+        err = AgenticCommerceError("Test error", "TEST_ERROR", {"field": "value"})
         assert str(err) == "Test error"
         assert err.code == "TEST_ERROR"
         assert err.details == {"field": "value"}
-        assert type(err).__name__ == "AgentPayError"
+        assert type(err).__name__ == "AgenticCommerceError"
         assert isinstance(err, Exception)
 
     def test_without_details(self) -> None:
-        err = AgentPayError("Test error", "TEST_ERROR")
+        err = AgenticCommerceError("Test error", "TEST_ERROR")
         assert str(err) == "Test error"
         assert err.code == "TEST_ERROR"
         assert err.details is None
@@ -37,13 +38,38 @@ class TestValidationError:
         assert err.code == "VALIDATION_ERROR"
         assert err.details == {"field": "amount", "value": "abc"}
         assert type(err).__name__ == "ValidationError"
-        assert isinstance(err, AgentPayError)
+        assert isinstance(err, AgenticCommerceError)
 
     def test_without_details(self) -> None:
         err = ValidationError("Invalid format")
         assert str(err) == "Invalid format"
         assert err.code == "VALIDATION_ERROR"
         assert err.details is None
+
+
+class TestSigningError:
+    def test_with_details(self) -> None:
+        err = SigningError("KMS failed", {"supported": ["ECDSA_SHA_384"]})
+        assert str(err) == "KMS failed"
+        assert err.code == "SIGNING_ERROR"
+        assert err.details == {"supported": ["ECDSA_SHA_384"]}
+        assert isinstance(err, AgenticCommerceError)
+
+    def test_without_details(self) -> None:
+        err = SigningError("KMS failed")
+        assert err.code == "SIGNING_ERROR"
+        assert err.details is None
+
+
+class TestDPoPError:
+    def test_attributes(self) -> None:
+        err = DPoPError("bad proof", {"jti": "abc"})
+        assert str(err) == "bad proof"
+        assert err.code == "DPOP_ERROR"
+        assert err.details == {"jti": "abc"}
+
+    def test_without_details(self) -> None:
+        assert DPoPError("bad proof").details is None
 
 
 class TestSignatureError:
@@ -60,8 +86,8 @@ class TestSignatureError:
         assert err.token_type == "payment"
         assert err.details == {"token_type": "payment"}
 
-    def test_is_agent_pay_error(self) -> None:
-        assert issubclass(SignatureError, AgentPayError)
+    def test_is_agentic_commerce_error(self) -> None:
+        assert issubclass(SignatureError, AgenticCommerceError)
 
 
 class TestExpiryError:
@@ -72,8 +98,8 @@ class TestExpiryError:
         assert err.current_time == 2000
         assert err.details == {"expiry": 1000, "current_time": 2000}
 
-    def test_is_agent_pay_error(self) -> None:
-        assert issubclass(ExpiryError, AgentPayError)
+    def test_is_agentic_commerce_error(self) -> None:
+        assert issubclass(ExpiryError, AgenticCommerceError)
 
 
 class TestMismatchError:
@@ -90,25 +116,26 @@ class TestMismatchError:
         err = MismatchError("Price mismatch", expected, actual)  # type: ignore[arg-type]
         assert err.details == {"expected": expected, "actual": actual}
 
-    def test_is_agent_pay_error(self) -> None:
-        assert issubclass(MismatchError, AgentPayError)
+    def test_is_agentic_commerce_error(self) -> None:
+        assert issubclass(MismatchError, AgenticCommerceError)
 
 
 class TestErrorInheritance:
-    def test_catch_all_as_agent_pay_error(self) -> None:
+    def test_catch_all_as_agentic_commerce_error(self) -> None:
         errors = [
             ValidationError("test"),
             SignatureError("test", "quote"),
             ExpiryError("test", 123, 456),
             MismatchError("test", "a", "b"),
             DPoPError("test"),
+            SigningError("test"),
         ]
         for err in errors:
-            assert isinstance(err, AgentPayError)
+            assert isinstance(err, AgenticCommerceError)
             assert isinstance(err, Exception)
 
     def test_catch_specific_type(self) -> None:
         err = ValidationError("test")
         assert isinstance(err, ValidationError)
-        assert isinstance(err, AgentPayError)
+        assert isinstance(err, AgenticCommerceError)
         assert not isinstance(err, SignatureError)

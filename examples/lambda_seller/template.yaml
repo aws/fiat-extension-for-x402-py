@@ -1,0 +1,113 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Example seller for the Fiat Extension for x402: FastAPI on AWS Lambda behind a
+  Function URL, protected by x402's FastAPI middleware with the exact scheme for
+  AWS Marketplace Agentic Commerce. Code is uploaded separately (deploy.sh).
+
+Parameters:
+  PayTo:
+    Type: String
+    Description: The seller's payee identifier (its product id).
+  ServiceUrl:
+    Type: String
+    Default: ""
+    Description: >
+      The seller's public URL (quote token issuer). Leave empty on the first
+      deploy; deploy.sh sets it to the Function URL.
+
+Resources:
+  QuoteSigningKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Signs the example seller's quote tokens
+      KeySpec: ECC_NIST_P384
+      KeyUsage: SIGN_VERIFY
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdmin
+            Effect: Allow
+            Principal: { AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root" }
+            Action: "kms:*"
+            Resource: "*"
+
+  QuoteSigningKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${AWS::StackName}-quote-signing-key"
+      TargetKeyId: !Ref QuoteSigningKey
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: QuoteSigning
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [kms:Sign, kms:GetPublicKey]
+                Resource: !GetAtt QuoteSigningKey.Arn
+
+  Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: app.handler
+      MemorySize: 512
+      Timeout: 15
+      Role: !GetAtt FunctionRole.Arn
+      Code:
+        ZipFile: "def handler(event, context): return {'statusCode': 503, 'body': 'code not deployed'}"
+      Environment:
+        Variables:
+          SELLER_KMS_KEY_ARN: !GetAtt QuoteSigningKey.Arn
+          SELLER_PAY_TO: !Ref PayTo
+          SELLER_SERVICE_URL: !Ref ServiceUrl
+
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Function}"
+      RetentionInDays: 14
+
+  FunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt Function.Arn
+      AuthType: NONE
+
+  FunctionUrlPublicInvokeUrl:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  FunctionUrlPublicInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+Outputs:
+  FunctionName:
+    Value: !Ref Function
+  SellerUrl:
+    Value: !GetAtt FunctionUrl.FunctionUrl
+  QuoteSigningKeyArn:
+    Value: !GetAtt QuoteSigningKey.Arn

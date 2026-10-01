@@ -1,86 +1,60 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Constants for the Agent Pay x402 extension."""
+"""Constants for the AWS Marketplace Agentic Commerce x402 extension."""
 
 from __future__ import annotations
 
-# Agent Pay scheme identifier.
-AGENT_PAY_SCHEME = "agent-pay"
+# x402 scheme identifier for a fixed-price payment.
+SCHEME_EXACT = "exact"
+
+# CAIP-2 family identifier for AWS Marketplace Agentic Commerce networks.
+AGENTIC_COMMERCE_CAIP_FAMILY = "aws:*"
+
+# Default network identifier.
+DEFAULT_NETWORK = "aws:base"
+
+# Default asset: prices are fiat amounts identified by ISO 4217 currency code.
+DEFAULT_ASSET = "iso4217:USD"
 
 # Default quote token validity (5 minutes).
 DEFAULT_QUOTE_VALIDITY_SECONDS = 300
 
-# Default payment token validity (1 hour).
-DEFAULT_PAYMENT_VALIDITY_SECONDS = 3600
+# ``iss`` claim of every payment token issued by the AWS Marketplace Agentic
+# Commerce service. The value is set by the service and is verified here.
+PAYMENT_TOKEN_ISSUER = "awsmp-agentpay.amazonaws.com"
 
-# Default network identifier for AWS Marketplace Agent Pay.
-DEFAULT_NETWORK = "aws:base"
+# ``aud`` claim of quote tokens: the service that redeems them.
+QUOTE_TOKEN_AUDIENCE = "aws:marketplace"
 
-# Payment JWT issuer claim value used by the AWS Marketplace Agent Pay Service.
-PAYMENT_JWT_ISSUER = "awsmp-agentpay.amazonaws.com"
+# Sentinel ``payTo`` in payment requirements. The signed quote token is the
+# authoritative source for the recipient; the outer, unsigned field is required
+# by x402 core but carries no information.
+SENTINEL_PAY_TO = "urn:x402:agentic-commerce:see-quote"
 
-# Sentinel value for PaymentRequirements.payTo in Agent Pay.
-#
-# In Agent Pay, the signed quote token is the authoritative source for the payment
-# recipient. The outer PaymentRequirements.payTo field is required by x402 core
-# but semantically redundant — the quote token's payTo is signed by the service
-# and cannot be tampered with, whereas the outer field is unsigned.
-AGENT_PAY_SENTINEL_PAY_TO = "urn:x402:agent-pay:see-quote"
+# Asset transfer method advertised to x402 core. It never appears on the wire.
+ASSET_TRANSFER_METHOD = "payment-token"
 
-# Path to the JWKS endpoint for public key discovery.
+# Requirement fields that change on every 402 and are therefore excluded when
+# x402 core matches a buyer's ``accepted`` requirements against the route's.
+DYNAMIC_EXTRA_FIELDS = ["quoteToken"]
+
+# Default base URL of the service's payment-token signing keys (JWKS).
+DEFAULT_PAYMENT_TOKEN_JWKS_BASE_URL = "https://d3aeb2cjjowogc.cloudfront.net"
+
+# Path to the JWKS document under a base URL.
 WELL_KNOWN_JWKS_PATH = "/.well-known/jwks.json"
 
-# Path to the x402 supported kinds endpoint.
-WELL_KNOWN_X402_SUPPORTED_PATH = "/.well-known/x402-supported"
-
-# Path to the OIDC discovery endpoint.
-WELL_KNOWN_OIDC_PATH = "/.well-known/openid-configuration"
-
-# The audience identifier for the AWS Marketplace Agent Pay Service.
-# This is the ``aud`` claim in quote tokens — it identifies WHO processes the token.
-AGENT_PAY_AUDIENCE = "aws:marketplace"
-
-# Default base URL for Agent Pay's JWKS (signing key) endpoint.
-AGENT_PAY_JWKS_BASE_URL = "https://d3aeb2cjjowogc.cloudfront.net"
-
-# WAF access header value required to fetch Agent Pay's JWKS endpoint.
-AGENT_PAY_JWKS_ACCESS_KEY = "agentpay-test-2026"
-
-# Default base URL for the Agent Pay service endpoint.
-DEFAULT_AGENT_PAY_BASE_URL = "https://prod.agentpay.marketplace.aws.dev"
-
-# CAIP-2 family identifier for AWS Agent Pay networks.
-AGENT_PAY_CAIP_FAMILY = "aws:*"
-
-# Valid settlement methods (ISO 20022-derived codes).
-SETTLEMENT_METHODS: dict[str, str] = {
-    "INST": "INST",
-    "CLRG": "CLRG",
-    "CRDT": "CRDT",
-}
-
-# Valid settlement cycles.
-SETTLEMENT_CYCLES: dict[str, str] = {
-    "MNTH": "MNTH",
-    "WEEK": "WEEK",
-    "QRTR": "QRTR",
-}
-
 __all__ = [
-    "AGENT_PAY_AUDIENCE",
-    "AGENT_PAY_CAIP_FAMILY",
-    "AGENT_PAY_JWKS_ACCESS_KEY",
-    "AGENT_PAY_JWKS_BASE_URL",
-    "AGENT_PAY_SCHEME",
-    "AGENT_PAY_SENTINEL_PAY_TO",
-    "DEFAULT_AGENT_PAY_BASE_URL",
+    "AGENTIC_COMMERCE_CAIP_FAMILY",
+    "ASSET_TRANSFER_METHOD",
+    "DEFAULT_ASSET",
     "DEFAULT_NETWORK",
-    "DEFAULT_PAYMENT_VALIDITY_SECONDS",
+    "DEFAULT_PAYMENT_TOKEN_JWKS_BASE_URL",
     "DEFAULT_QUOTE_VALIDITY_SECONDS",
-    "PAYMENT_JWT_ISSUER",
-    "SETTLEMENT_CYCLES",
-    "SETTLEMENT_METHODS",
+    "DYNAMIC_EXTRA_FIELDS",
+    "PAYMENT_TOKEN_ISSUER",
+    "QUOTE_TOKEN_AUDIENCE",
+    "SCHEME_EXACT",
+    "SENTINEL_PAY_TO",
     "WELL_KNOWN_JWKS_PATH",
-    "WELL_KNOWN_OIDC_PATH",
-    "WELL_KNOWN_X402_SUPPORTED_PATH",
 ]

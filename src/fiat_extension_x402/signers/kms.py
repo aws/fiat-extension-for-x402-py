@@ -1,16 +1,15 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""AWS KMS signer for Agent Pay quote tokens.
+"""AWS KMS signer for quote tokens.
 
-Provides a production-ready :class:`ServiceAgentPaySigner` implementation that
-signs quote tokens using an AWS KMS asymmetric key (ECC_NIST_P384 / ES384).
+Provides a production-ready :class:`~fiat_extension_x402.signers.QuoteSigner`
+that signs quote tokens using an AWS KMS asymmetric key (ECC_NIST_P384 / ES384).
 The private key never leaves KMS — signing happens server-side via the KMS
 Sign API.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 from dataclasses import dataclass, field
@@ -19,7 +18,7 @@ from typing import Any, Optional
 import boto3  # type: ignore[import-untyped]
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
-from fiat_extension_x402.exceptions import AgentPayError
+from fiat_extension_x402.exceptions import SigningError
 
 # Maps KMS algorithm to JWT ``alg`` header value.
 _ALG_MAP: dict[str, str] = {
@@ -56,16 +55,9 @@ def _der_to_raw(der_signature: bytes, component_length: int) -> bytes:
     return r_bytes + s_bytes
 
 
-class SigningError(AgentPayError):
-    """Error raised when quote token signing fails."""
-
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
-        super().__init__(message, "SIGNING_ERROR", details)
-
-
 @dataclass(frozen=True)
-class KmsSignerConfig:
-    """Configuration for the KMS signer.
+class KmsQuoteSignerConfig:
+    """Configuration for :class:`KmsQuoteSigner`.
 
     :param key_arn: KMS key ARN or alias ARN.
     :param region: AWS region where the KMS key lives.
@@ -83,34 +75,27 @@ class KmsSignerConfig:
     _kms_client: Any = field(default=None, repr=False, compare=False)
 
 
-def create_kms_signer(config: KmsSignerConfig) -> "_KmsSigner":
-    """Create a :class:`ServiceAgentPaySigner` backed by AWS KMS.
+class KmsQuoteSigner:
+    """Quote signer backed by an AWS KMS asymmetric EC key.
 
-    Signs quote tokens using a KMS asymmetric EC key. The private key never
-    leaves KMS — signing happens server-side via the KMS Sign API.
+    The private key never leaves KMS: signing happens server-side via the KMS
+    ``Sign`` API.
 
-    :param config: KMS signer configuration.
-    :returns: A signer instance satisfying :class:`ServiceAgentPaySigner`.
+    :param config: Signer configuration.
     :raises SigningError: if the algorithm is not supported or ``service_url`` is empty.
     """
-    if not config.service_url or not config.service_url.strip():
-        raise SigningError(
-            "service_url is required and must be non-empty. It becomes the quote "
-            "token's 'iss' claim, which Agent Pay requires."
-        )
-    jwt_alg = _ALG_MAP.get(config.algorithm)
-    if jwt_alg is None:
-        raise SigningError(
-            f"Unsupported algorithm: {config.algorithm}",
-            {"supported": list(_ALG_MAP.keys())},
-        )
-    return _KmsSigner(config)
 
-
-class _KmsSigner:
-    """KMS-backed signer that satisfies the :class:`ServiceAgentPaySigner` protocol."""
-
-    def __init__(self, config: KmsSignerConfig) -> None:
+    def __init__(self, config: KmsQuoteSignerConfig) -> None:
+        if not config.service_url or not config.service_url.strip():
+            raise SigningError(
+                "service_url is required and must be non-empty. It becomes the quote "
+                "token's 'iss' claim, which the service requires."
+            )
+        if config.algorithm not in _ALG_MAP:
+            raise SigningError(
+                f"Unsupported algorithm: {config.algorithm}",
+                {"supported": list(_ALG_MAP.keys())},
+            )
         self._key_arn = config.key_arn
         self._service_url = config.service_url
         self._algorithm = config.algorithm
@@ -134,7 +119,7 @@ class _KmsSigner:
         else:
             self._kms_client = boto3.client("kms", region_name=config.region)
 
-    async def sign_quote(self, payload: dict[str, Any]) -> str:
+    def sign_quote(self, payload: dict[str, Any]) -> str:
         """Sign a quote token payload via KMS and return the compact JWT.
 
         Constructs the JWS header and payload segments, signs via the KMS
@@ -150,11 +135,8 @@ class _KmsSigner:
         body = _base64url_encode(json.dumps(payload, separators=(",", ":")).encode())
         message = f"{header}.{body}".encode()
 
-        # boto3's KMS client is synchronous; offload to a thread so signing does
-        # not block the event loop when called from an async server.
         try:
-            response = await asyncio.to_thread(
-                self._kms_client.sign,
+            response = self._kms_client.sign(
                 KeyId=self._key_arn,
                 Message=message,
                 MessageType="RAW",
@@ -172,17 +154,12 @@ class _KmsSigner:
 
         return f"{header}.{body}.{signature}"
 
-    def get_public_key(self) -> object:
-        """Return an empty dict — Agent Pay fetches the public key from KMS directly."""
-        return {}
-
     def get_service_url(self) -> str:
         """Return the service URL (issuer)."""
         return self._service_url
 
 
 __all__ = [
-    "KmsSignerConfig",
-    "SigningError",
-    "create_kms_signer",
+    "KmsQuoteSigner",
+    "KmsQuoteSignerConfig",
 ]
