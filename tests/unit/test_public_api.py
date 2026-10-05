@@ -44,6 +44,7 @@ EXPECTED_EXPORTS = {
     "decode_quote_token",
     "enhance_payment_requirements",
     "extract_dpop_thumbprint",
+    "jwks_document",
     "parse_money_to_decimal",
     "register_exact_agentic_commerce_facilitator",
     "register_exact_agentic_commerce_server",
@@ -77,7 +78,7 @@ def test_export_is_importable(name: str) -> None:
 
 
 def test_version() -> None:
-    assert fiat_extension_x402.__version__ == "0.1.0"
+    assert fiat_extension_x402.__version__ == "1.0.0"
 
 
 def test_constant_values() -> None:

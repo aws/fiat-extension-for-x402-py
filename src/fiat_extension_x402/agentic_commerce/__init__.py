@@ -9,6 +9,7 @@ from fiat_extension_x402.agentic_commerce.keys import (
     KmsSellerKeyResolver,
     SellerKeyResolver,
     StaticSellerKeyResolver,
+    jwks_document,
 )
 from fiat_extension_x402.agentic_commerce.quote import enhance_payment_requirements
 from fiat_extension_x402.agentic_commerce.verifier import (
@@ -24,4 +25,5 @@ __all__ = [
     "StaticSellerKeyResolver",
     "VerificationResult",
     "enhance_payment_requirements",
+    "jwks_document",
 ]

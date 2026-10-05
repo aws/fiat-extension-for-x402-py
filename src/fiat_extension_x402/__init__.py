@@ -7,7 +7,7 @@ server and :class:`ExactAgenticCommerceFacilitatorScheme` on an x402
 facilitator, then protect routes with x402's own HTTP middleware.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 from fiat_extension_x402.agentic_commerce import (
     AgenticCommerceVerifier,
@@ -17,6 +17,7 @@ from fiat_extension_x402.agentic_commerce import (
     StaticSellerKeyResolver,
     VerificationResult,
     enhance_payment_requirements,
+    jwks_document,
 )
 from fiat_extension_x402.agentic_commerce.exact import (
     ExactAgenticCommerceFacilitatorScheme,
@@ -96,6 +97,7 @@ __all__ = [
     "decode_quote_token",
     "enhance_payment_requirements",
     "extract_dpop_thumbprint",
+    "jwks_document",
     "parse_money_to_decimal",
     "register_exact_agentic_commerce_facilitator",
     "register_exact_agentic_commerce_server",

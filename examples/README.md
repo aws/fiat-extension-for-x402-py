@@ -4,6 +4,7 @@
 |---|---|
 | [fastapi_seller.py](fastapi_seller.py) | A FastAPI seller using x402's FastAPI middleware, a KMS quote signer and an in-process facilitator |
 | [flask_seller.py](flask_seller.py) | The same seller on Flask, with x402's synchronous objects |
+| [jwks_seller.py](jwks_seller.py) | A FastAPI seller that signs with its own PEM key and serves its JWKS at `/.well-known/jwks.json` |
 | [lambda_seller/](lambda_seller/) | The FastAPI seller on AWS Lambda behind a Function URL, with a CloudFormation template and `deploy.sh` |
 
 Deploy the Lambda seller to your own account:
