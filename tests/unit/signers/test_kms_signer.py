@@ -14,14 +14,14 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 from moto import mock_aws
 
+from fiat_extension_x402.exceptions import SigningError
 from fiat_extension_x402.signers.kms import (
-    KmsSignerConfig,
-    SigningError,
+    KmsQuoteSigner,
+    KmsQuoteSignerConfig,
     _base64url_encode,
     _der_to_raw,
-    create_kms_signer,
 )
-from fiat_extension_x402.signers.protocol import ServiceAgentPaySigner
+from fiat_extension_x402.signers.protocol import QuoteSigner
 
 
 def _base64url_decode(s: str) -> bytes:
@@ -32,36 +32,36 @@ def _base64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s)
 
 
-class TestCreateKmsSigner:
-    """Tests for create_kms_signer factory function."""
+class TestKmsQuoteSignerInit:
+    """Tests for KmsQuoteSigner construction."""
 
     def test_unsupported_algorithm_raises_signing_error(self) -> None:
-        config = KmsSignerConfig(
+        config = KmsQuoteSignerConfig(
             key_arn="arn:aws:kms:us-east-1:123456789012:key/test",
             region="us-east-1",
             service_url="https://api.example.com",
             algorithm="INVALID_ALGO",
         )
         with pytest.raises(SigningError, match="Unsupported algorithm"):
-            create_kms_signer(config)
+            KmsQuoteSigner(config)
 
     def test_empty_service_url_raises_signing_error(self) -> None:
-        config = KmsSignerConfig(
+        config = KmsQuoteSignerConfig(
             key_arn="arn:aws:kms:us-east-1:123456789012:key/test",
             region="us-east-1",
             service_url="",
         )
         with pytest.raises(SigningError, match="service_url is required"):
-            create_kms_signer(config)
+            KmsQuoteSigner(config)
 
     def test_whitespace_service_url_raises_signing_error(self) -> None:
-        config = KmsSignerConfig(
+        config = KmsQuoteSignerConfig(
             key_arn="arn:aws:kms:us-east-1:123456789012:key/test",
             region="us-east-1",
             service_url="   ",
         )
         with pytest.raises(SigningError, match="service_url is required"):
-            create_kms_signer(config)
+            KmsQuoteSigner(config)
 
     @mock_aws
     def test_creates_signer_satisfying_protocol(self) -> None:
@@ -69,14 +69,14 @@ class TestCreateKmsSigner:
         key = client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
         key_arn = key["KeyMetadata"]["Arn"]
 
-        config = KmsSignerConfig(
+        config = KmsQuoteSignerConfig(
             key_arn=key_arn,
             region="us-east-1",
             service_url="https://api.example.com",
             _kms_client=client,
         )
-        signer = create_kms_signer(config)
-        assert isinstance(signer, ServiceAgentPaySigner)
+        signer = KmsQuoteSigner(config)
+        assert isinstance(signer, QuoteSigner)
 
     @mock_aws
     def test_default_algorithm_is_ecdsa_sha_384(self) -> None:
@@ -84,13 +84,13 @@ class TestCreateKmsSigner:
         key = client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
         key_arn = key["KeyMetadata"]["Arn"]
 
-        config = KmsSignerConfig(
+        config = KmsQuoteSignerConfig(
             key_arn=key_arn,
             region="us-east-1",
             service_url="https://api.example.com",
             _kms_client=client,
         )
-        signer = create_kms_signer(config)
+        signer = KmsQuoteSigner(config)
         assert signer._jwt_alg == "ES384"
 
     @mock_aws
@@ -100,12 +100,12 @@ class TestCreateKmsSigner:
         key = client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
         key_arn = key["KeyMetadata"]["Arn"]
 
-        config = KmsSignerConfig(
+        config = KmsQuoteSignerConfig(
             key_arn=key_arn,
             region="us-east-1",
             service_url="https://api.example.com",
         )
-        signer = create_kms_signer(config)
+        signer = KmsQuoteSigner(config)
         assert signer._kms_client is not None
 
 
@@ -119,13 +119,13 @@ class TestKmsSignerKidDerivation:
         key_id = key["KeyMetadata"]["KeyId"]
         client.create_alias(AliasName="alias/my-quote-key", TargetKeyId=key_id)
 
-        config = KmsSignerConfig(
+        config = KmsQuoteSignerConfig(
             key_arn="arn:aws:kms:us-east-1:123456789012:alias/my-quote-key",
             region="us-east-1",
             service_url="https://api.example.com",
             _kms_client=client,
         )
-        signer = create_kms_signer(config)
+        signer = KmsQuoteSigner(config)
         assert signer._kid == "my-quote-key"
 
     @mock_aws
@@ -134,13 +134,13 @@ class TestKmsSignerKidDerivation:
         key = client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
         key_arn = key["KeyMetadata"]["Arn"]
 
-        config = KmsSignerConfig(
+        config = KmsQuoteSignerConfig(
             key_arn=key_arn,
             region="us-east-1",
             service_url="https://api.example.com",
             _kms_client=client,
         )
-        signer = create_kms_signer(config)
+        signer = KmsQuoteSigner(config)
         # ARN ends with "key/<uuid>" so kid should be "key/<uuid>"
         assert signer._kid.startswith("key/")
 
@@ -150,34 +150,33 @@ class TestKmsSignerKidDerivation:
         key = client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
         key_arn = key["KeyMetadata"]["Arn"]
 
-        config = KmsSignerConfig(
+        config = KmsQuoteSignerConfig(
             key_arn=key_arn,
             region="us-east-1",
             service_url="https://api.example.com",
             kid="custom-kid",
             _kms_client=client,
         )
-        signer = create_kms_signer(config)
+        signer = KmsQuoteSigner(config)
         assert signer._kid == "custom-kid"
 
 
 class TestKmsSignerSignQuote:
     """Tests for the sign_quote method."""
 
-    @pytest.mark.asyncio
-    async def test_produces_valid_jwt_structure(self) -> None:
+    def test_produces_valid_jwt_structure(self) -> None:
         with mock_aws():
             client = boto3.client("kms", region_name="us-east-1")
             key = client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
             key_arn = key["KeyMetadata"]["Arn"]
 
-            config = KmsSignerConfig(
+            config = KmsQuoteSignerConfig(
                 key_arn=key_arn,
                 region="us-east-1",
                 service_url="https://api.example.com",
                 _kms_client=client,
             )
-            signer = create_kms_signer(config)
+            signer = KmsQuoteSigner(config)
 
             payload: dict[str, object] = {
                 "iss": "https://api.example.com",
@@ -190,7 +189,7 @@ class TestKmsSignerSignQuote:
                 "reference": "RESOURCE",
             }
 
-            token = await signer.sign_quote(payload)
+            token = signer.sign_quote(payload)
 
             # JWT has three parts.
             parts = token.split(".")
@@ -208,8 +207,7 @@ class TestKmsSignerSignQuote:
             assert decoded_payload["aud"] == "aws:marketplace"
             assert decoded_payload["jti"] == "test-jti-123"
 
-    @pytest.mark.asyncio
-    async def test_signature_is_verifiable(self) -> None:
+    def test_signature_is_verifiable(self) -> None:
         """Sign JWTs, then verify each signature using the KMS public key.
 
         This proves the DER-to-raw conversion produces a correct JWS signature.
@@ -230,13 +228,13 @@ class TestKmsSignerSignQuote:
             public_key = load_der_public_key(pub_resp["PublicKey"])
             assert isinstance(public_key, ec.EllipticCurvePublicKey)
 
-            config = KmsSignerConfig(
+            config = KmsQuoteSignerConfig(
                 key_arn=key_arn,
                 region="us-east-1",
                 service_url="https://api.example.com",
                 _kms_client=client,
             )
-            signer = create_kms_signer(config)
+            signer = KmsQuoteSigner(config)
 
             for i in range(50):
                 payload: dict[str, object] = {
@@ -250,7 +248,7 @@ class TestKmsSignerSignQuote:
                     "reference": "TEST",
                 }
 
-                token = await signer.sign_quote(payload)
+                token = signer.sign_quote(payload)
                 parts = token.split(".")
 
                 # The message that was signed is header.payload (ASCII bytes).
@@ -268,21 +266,20 @@ class TestKmsSignerSignQuote:
                 # Verify against the public key — raises InvalidSignature on failure.
                 public_key.verify(der_sig, message, ec.ECDSA(hashes.SHA384()))
 
-    @pytest.mark.asyncio
-    async def test_kms_error_raises_signing_error(self) -> None:
+    def test_kms_error_raises_signing_error(self) -> None:
         """If the KMS client raises, we wrap it in SigningError."""
         with mock_aws():
             client = boto3.client("kms", region_name="us-east-1")
             key = client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
             key_arn = key["KeyMetadata"]["Arn"]
 
-            config = KmsSignerConfig(
+            config = KmsQuoteSignerConfig(
                 key_arn=key_arn,
                 region="us-east-1",
                 service_url="https://api.example.com",
                 _kms_client=client,
             )
-            signer = create_kms_signer(config)
+            signer = KmsQuoteSigner(config)
 
             # Monkeypatch sign to raise.
             def _raise_error(**_kwargs: object) -> None:
@@ -291,23 +288,22 @@ class TestKmsSignerSignQuote:
             signer._kms_client.sign = _raise_error
 
             with pytest.raises(SigningError, match="KMS Sign API call failed"):
-                await signer.sign_quote({"iss": "test"})
+                signer.sign_quote({"iss": "test"})
 
-    @pytest.mark.asyncio
-    async def test_empty_signature_raises_signing_error(self) -> None:
+    def test_empty_signature_raises_signing_error(self) -> None:
         """If KMS returns an empty signature, we raise SigningError."""
         with mock_aws():
             client = boto3.client("kms", region_name="us-east-1")
             key = client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
             key_arn = key["KeyMetadata"]["Arn"]
 
-            config = KmsSignerConfig(
+            config = KmsQuoteSignerConfig(
                 key_arn=key_arn,
                 region="us-east-1",
                 service_url="https://api.example.com",
                 _kms_client=client,
             )
-            signer = create_kms_signer(config)
+            signer = KmsQuoteSigner(config)
 
             # Return a response with an empty signature.
             def _empty_signature(**_kwargs: object) -> dict[str, bytes]:
@@ -316,26 +312,11 @@ class TestKmsSignerSignQuote:
             signer._kms_client.sign = _empty_signature
 
             with pytest.raises(SigningError, match="KMS Sign returned no signature"):
-                await signer.sign_quote({"iss": "test"})
+                signer.sign_quote({"iss": "test"})
 
 
 class TestKmsSignerAccessors:
-    """Tests for get_public_key and get_service_url."""
-
-    @mock_aws
-    def test_get_public_key_returns_empty_dict(self) -> None:
-        client = boto3.client("kms", region_name="us-east-1")
-        key = client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
-        key_arn = key["KeyMetadata"]["Arn"]
-
-        config = KmsSignerConfig(
-            key_arn=key_arn,
-            region="us-east-1",
-            service_url="https://api.example.com",
-            _kms_client=client,
-        )
-        signer = create_kms_signer(config)
-        assert signer.get_public_key() == {}
+    """Tests for get_service_url."""
 
     @mock_aws
     def test_get_service_url(self) -> None:
@@ -343,13 +324,13 @@ class TestKmsSignerAccessors:
         key = client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
         key_arn = key["KeyMetadata"]["Arn"]
 
-        config = KmsSignerConfig(
+        config = KmsQuoteSignerConfig(
             key_arn=key_arn,
             region="us-east-1",
             service_url="https://my-service.example.com",
             _kms_client=client,
         )
-        signer = create_kms_signer(config)
+        signer = KmsQuoteSigner(config)
         assert signer.get_service_url() == "https://my-service.example.com"
 
 

@@ -1,589 +1,179 @@
 # Fiat Extension for x402 (Python)
 
-Python SDK for AWS Marketplace Agent Pay — enables AI agents to pay for API calls using
-the x402 protocol.
+Accept fiat payments for HTTP APIs through the [x402](https://x402.org) protocol
+with **AWS Marketplace Agentic Commerce**.
 
-## What is Agent Pay?
+This package plugs into the [x402 Python SDK](https://pypi.org/project/x402/). It
+provides the `exact` payment scheme for AWS Marketplace Agentic Commerce networks
+(`aws:*`), for the two roles a seller runs:
 
-Agent Pay enables HTTP APIs to accept pay-per-request payments via AWS Marketplace. When
-a buyer's AI agent hits a seller's paid endpoint, the seller returns HTTP 402 with a
-signed price quote. The agent pays via Agent Pay and retries with a payment token. The
-seller verifies the token and delivers the resource. Charges appear on the buyer's AWS
-bill.
+| x402 role | Class | What it does |
+|---|---|---|
+| Resource server (seller) | `ExactAgenticCommerceServerScheme` | Prices routes in fiat, adds a signed **quote token** to every `402 Payment Required` response, and checks DPoP proofs |
+| Facilitator | `ExactAgenticCommerceFacilitatorScheme` | Verifies the **payment token** a buyer presents against the quote it pays for |
 
-The flow rests on two signed JWTs: a **quote token** (signed by the seller — "I will sell
-this for $0.15") and a **payment token** (signed by Agent Pay — "I authorized $0.15 from
-buyer X"). See [docs/sdk-guide.md](./docs/sdk-guide.md) for the full model.
+Use x402's own HTTP middleware (FastAPI, Flask) to protect routes. This package
+does not provide middleware or buyer-side code.
 
-## Installation
+## How a payment works
+
+1. A buyer requests a protected route without paying. The middleware answers
+   `402` with `exact` payment requirements on network `aws:base`, priced in
+   `iso4217:USD`, carrying a quote token signed by the seller.
+2. The buyer obtains a payment token for that quote from AWS Marketplace
+   Agentic Commerce, which signs it and captures the payment.
+3. The buyer retries with the payment token. The facilitator verifies it and the
+   route runs. Settlement is a no-op: the payment was already captured.
+
+See [docs/payment-flow.md](docs/payment-flow.md) for the full sequence and the
+checks performed.
+
+## Install
 
 ```bash
-pip install fiat-extension-for-x402
+pip install "fiat-extension-for-x402[fastapi]"   # or [flask]
 ```
 
-The base install protects buyers and verifies payments. For the web middleware, install
-the framework extra you need:
+Requires Python 3.10+ and `x402` 2.20 or later.
 
-```bash
-pip install "fiat-extension-for-x402[fastapi]"   # FastAPI middleware
-pip install "fiat-extension-for-x402[flask]"      # Flask middleware
-```
-
-Requires Python 3.10+.
-
----
-
-## Seller: Generate a quote token (402 response)
-
-When a buyer requests a paid resource without payment, return a signed quote. Pick a
-signer, build the payment requirements, and put them in a 402 response body.
-
-### Option A: KMS-hosted key (recommended for AWS sellers)
-
-The private key never leaves KMS — signing happens through the KMS `Sign` API. Use an
-asymmetric EC key (`ECC_NIST_P384`, which maps to ES384).
+## Quick start (FastAPI)
 
 ```python
+from fastapi import FastAPI
+from x402 import x402Facilitator, x402ResourceServer
+from x402.http.middleware.fastapi import payment_middleware
+from x402.http.types import PaymentOption, RouteConfig
+
 from fiat_extension_x402 import (
-    KmsSignerConfig,
-    create_kms_signer,
-    enhance_payment_requirements,
+    AgenticCommerceVerifier,
+    KmsQuoteSigner,
+    KmsQuoteSignerConfig,
+    KmsSellerKeyResolver,
+    register_exact_agentic_commerce_facilitator,
+    register_exact_agentic_commerce_server,
 )
 
-# Once at startup.
-signer = create_kms_signer(
-    KmsSignerConfig(
-        key_arn="arn:aws:kms:us-east-1:123456789012:key/your-key-id",
-        region="us-east-1",
-        service_url="https://api.your-service.com",  # becomes the quote token's `iss`
-    )
+KEY_ARN = "arn:aws:kms:us-east-1:111122223333:alias/my-quote-key"
+
+# Seller: signs quotes with a KMS key (ECC_NIST_P384, SIGN_VERIFY).
+signer = KmsQuoteSigner(
+    KmsQuoteSignerConfig(key_arn=KEY_ARN, region="us-east-1", service_url="https://api.example.com")
 )
 
-# In your request handler, when payment is missing:
-requirements = await enhance_payment_requirements(
-    {
-        "scheme": "agent-pay",
-        "network": "aws:base",
-        "payTo": "your-seller-id",
-        "amount": "0.50",
-        "asset": "iso4217:USD",
-        "maxTimeoutSeconds": 300,
-        "extra": {"description": "Premium API access"},
-    },
-    signer,
-)
+# Facilitator: verifies payment tokens, here in the seller's own process.
+verifier = AgenticCommerceVerifier(seller_key_resolver=KmsSellerKeyResolver(KEY_ARN, "us-east-1"))
+facilitator = register_exact_agentic_commerce_facilitator(x402Facilitator(), verifier=verifier)
+server = register_exact_agentic_commerce_server(x402ResourceServer(facilitator), signer=signer)
 
-# Return HTTP 402 with this body:
-# {"x402Version": 2, "accepts": [requirements]}
-```
-
-> The requirements above carry `amount`/`asset`, which is the v2 shape, so the body must
-> declare `x402Version: 2`. A buyer parses the body with the model the version names, and
-> x402 core dispatches v1 and v2 through separate scheme registries — declaring the wrong
-> version makes the offer unpayable. v1 clients want `maxAmountRequired` + `resource`
-> instead.
-
-`enhance_payment_requirements` signs the quote token and embeds it at
-`requirements["extra"]["quoteToken"]`. It also replaces `payTo` with a sentinel and
-derives `maxTimeoutSeconds` from the quote — the signed quote is the authoritative source
-for those fields (see [docs/sdk-guide.md](./docs/sdk-guide.md#sentinel-values)).
-
-> **`service_url` must be non-empty.** It becomes the quote token's `iss` (issuer)
-> claim, which Agent Pay requires — a token with an empty `iss` is rejected with
-> `400 ... Missing or empty: [iss]`. Both signer constructors (`create_kms_signer`,
-> `to_service_agent_pay_signer`) reject an empty or whitespace-only `service_url` at
-> construction time, and `enhance_payment_requirements` refuses to sign one, so the
-> misconfiguration surfaces immediately rather than at the service.
-
-### Option B: Self-hosted key
-
-Hold the signing key in process (for development, or when you manage your own key
-material). Host the matching public key as a JWKS document at
-`{service_url}/.well-known/jwks.json` so Agent Pay and the verifier can fetch it.
-
-```python
-from cryptography.hazmat.primitives.asymmetric.ec import SECP384R1, generate_private_key
-from fiat_extension_x402 import enhance_payment_requirements, to_service_agent_pay_signer
-
-private_key = generate_private_key(SECP384R1())
-public_jwk = {  # publish this (with "kid") at {service_url}/.well-known/jwks.json
-    "kty": "EC", "crv": "P-384", "alg": "ES384", "use": "sig", "kid": "my-key-1",
-    "x": "...", "y": "...",  # base64url EC coordinates
+routes = {
+    "GET /weather": RouteConfig(
+        accepts=PaymentOption(scheme="exact", network="aws:base", pay_to="prod-example123", price="$0.01"),
+        description="Current weather",
+    ),
 }
 
-signer = to_service_agent_pay_signer(private_key, public_jwk, "https://api.your-service.com")
+app = FastAPI()
 
-# Same enhance_payment_requirements(...) call as Option A.
+
+@app.get("/weather")
+def weather() -> dict[str, object]:
+    return {"temperature_f": 58}
+
+
+app.middleware("http")(payment_middleware(routes, server))
 ```
 
-> A runnable build-a-key-pair example lives in
-> [`examples/end_to_end_demo.py`](./examples/end_to_end_demo.py).
+Flask is the same with `x402ResourceServerSync`, `x402FacilitatorSync` and
+`x402.http.middleware.flask.payment_middleware(app, routes, server)`. See
+[examples/](examples/).
 
----
+## Configuration
 
-## Buyer (AI agent): Authorize a payment
+### Quote signing
 
-Agent Pay registers as an x402 payment scheme (`agent-pay`), so a buyer pays through the
-standard x402 client. Register the network once at startup, then hand the parsed 402 body
-to `create_payment_payload` — x402 core picks the matching offer, routes it to the Agent
-Pay scheme, and returns a complete payment payload. The buyer authenticates with AWS
-SigV4; charges land on this AWS account's bill.
+| Signer | Use |
+|---|---|
+| `KmsQuoteSigner` | Production. The private key never leaves AWS KMS. Supports `ECDSA_SHA_256/384/512` (default `ECDSA_SHA_384`). |
+| `LocalQuoteSigner` | Development and tests. Holds the private key in memory. |
 
-```python
-from fiat_extension_x402 import (
-    AgentPayClientOptions,
-    create_agent_pay_client,
-    create_env_credential_provider,
-)
+The signer's `service_url` becomes the quote token's `iss` claim and must be the
+seller URL registered for the listing.
 
-buyer = create_agent_pay_client(
-    AgentPayClientOptions(
-        agent_pay_id="YOUR_AWS_ACCOUNT_ID",
-        credentials=create_env_credential_provider(),  # reads AWS_* from the environment
-    )
-)
-buyer.register_network("aws:base")  # or "aws:*" for every AWS network
+### Product ID
 
-# `payment_required` is the parsed 402 body (an x402 PaymentRequired).
-# The SDK reads the quote token and calls POST /CreateAgentPayment for you.
-payload = buyer.create_payment_payload(payment_required)
-# payload.payload["paymentId"]    -> "awsmp-..."
-# payload.payload["paymentToken"] -> "eyJ..."  (signed by Agent Pay)
-```
+Set each route's `pay_to` to the seller's **AWS Marketplace product ID**. The
+server scheme signs it into the quote as `payTo` and as `settlement.product_id`,
+which the payment service requires to settle against the listing. On the wire,
+`payTo` is replaced by a placeholder; the signed quote carries the real value.
 
-Retry the original request with the payload encoded into the standard x402 header. x402
-core does the encoding — `PAYMENT-SIGNATURE` for v2, `X-PAYMENT` for v1:
+Other quote details come from the route's `extra`:
 
 ```python
-import httpx
-from x402.http import x402HTTPClientSync
-
-headers = x402HTTPClientSync(buyer.client).encode_payment_signature_header(payload)
-result = httpx.get(url, headers=headers)
-```
-
-If the 402 body arrives as raw JSON, parse it into the x402 model first:
-
-```python
-from x402.schemas import PaymentRequired
-
-payment_required = PaymentRequired.model_validate(response_402)
-```
-
-### Direct API access
-
-`create_payment_payload` is the x402 entry point, but the Agent Pay API is also available
-directly — useful when you already hold a quote token, or need `get_payment` /
-`list_payments`:
-
-```python
-from fiat_extension_x402 import AgentPayClient
-from fiat_extension_x402.schemas import CreateAgentPaymentRequest, ListAgentPaymentsRequest
-
-client = AgentPayClient(credentials=create_env_credential_provider())
-
-quote_token = response_402["accepts"][0]["extra"]["quoteToken"]
-payment = client.create_payment(CreateAgentPaymentRequest(quote_token=quote_token))
-
-detail = client.get_payment(payment.payment_id)
-history = client.list_payments(ListAgentPaymentsRequest(max_results=25))
-
-# Confirm a token is genuinely signed by Agent Pay (signature + expiry only).
-claims = client.verify_payment_token(payment.payment_token)
-```
-
-`list_payments` also accepts a plain dict (`{"maxResults": 25}`) for convenience.
-
-`verify_payment_token` fetches Agent Pay's JWKS and checks the token's signature and
-expiry, for callers who only need to know a token is authentic. It does **not** check quote
-binding, amount, or DPoP — for that, verify through `AgentPayFacilitatorClient` (below).
-
-Pass `client_token=` to `CreateAgentPaymentRequest` for idempotency: reusing the same
-token returns the same payment, and reusing it with different parameters raises
-`IdempotencyConflictError`. The client scheme generates a fresh `client_token` per call,
-so retrying the same requirements through `create_payment_payload` creates a new payment.
-
----
-
-## Seller: Verify a payment token
-
-When the buyer retries with a payment token, verify it before delivering the resource.
-`AgentPayFacilitatorClient` fetches Agent Pay's JWKS to check the payment token signature,
-confirms the embedded quote token matches the one you issued, validates the amount and
-expiry, and (when present) checks the DPoP binding.
-
-```python
-from fiat_extension_x402 import AgentPayFacilitatorClient
-
-facilitator = AgentPayFacilitatorClient()
-
-result = facilitator.verify(
-    payment_token,           # from the buyer's X-Payment payload
-    expected_quote_token,    # the quoteToken you put in the 402 (extra.quoteToken)
-    {                        # the requirements being satisfied
-        "amount": "0.50",
-        "asset": "iso4217:USD",
-        "network": "aws:base",
+PaymentOption(
+    scheme="exact",
+    network="aws:base",
+    pay_to="prod-abc123",            # AWS Marketplace product ID
+    price="$0.01",                   # at most 8 decimal places
+    extra={
+        "description": "Current weather",
+        "dimensions": {"calls": 1},
+        "settlement": {"mode": "immediate"},   # product_id is added for you
+        "reference": "weather-v1",
     },
 )
-
-if result.is_valid:
-    ...  # deliver the resource; result.payer is the buyer identity
-else:
-    ...  # 402 again; result.invalid_reason / result.invalid_message explain why
-
-# Settle is a no-op — Agent Pay auto-captures at payment creation.
-facilitator.settle(payment_id=payment_id, network="aws:base")
 ```
 
-### Locating your quote-signing key
+### Seller key resolution
 
-By default the seller's public key (used to verify the quote token's signature) is
-discovered from the quote token's `iss` claim at `{iss}/.well-known/jwks.json`. Pass a
-`seller_key_resolver` to override that:
+The facilitator verifies each quote with the seller's own public key. The key is
+always configured, never discovered from the token:
+
+| Resolver | Key source |
+|---|---|
+| `KmsSellerKeyResolver(kms_key_arn, region)` | `kms:GetPublicKey` (cached for one hour) |
+| `JwksSellerKeyResolver(jwks_url)` | `{jwks_url}/.well-known/jwks.json` (cached for one hour) |
+| `StaticSellerKeyResolver(public_jwk)` | A JWK the seller already holds |
+
+### Payment token verification
+
+`AgenticCommerceVerifier` accepts:
+
+- `payment_token_jwks_url`: base URL of the service's signing keys (defaults to production).
+- `jwks_request_headers`: extra headers for that request, for example an access
+  header issued during onboarding.
+
+### DPoP
+
+When a payment token is bound to a key (`cnf.jkt`), the request must carry a
+`DPoP` header (RFC 9449) proving possession of that key for this method, URL and
+payment token. The server scheme checks this before verification; pass
+`dpop_nonce_store=` to reject replayed proofs.
+
+## Running the facilitator separately
+
+The facilitator scheme works with any x402 facilitator, so it can also run as a
+standalone service that sellers call through `x402.http.HTTPFacilitatorClient`:
 
 ```python
-from fiat_extension_x402 import (
-    AgentPayFacilitatorClient,
-    JwksSellerKeyResolver,
-    KmsSellerKeyResolver,
-)
+from x402 import x402Facilitator
+from fiat_extension_x402 import register_exact_agentic_commerce_facilitator
 
-# Verify against the public half of the KMS key you sign quotes with —
-# no JWKS to host, and no HTTP fetch on the verification path. The public key is
-# fetched from KMS once and cached.
-facilitator = AgentPayFacilitatorClient(
-    seller_key_resolver=KmsSellerKeyResolver(
-        kms_key_arn="arn:aws:kms:us-east-1:123456789012:key/your-key-id",
-        region="us-east-1",
-    )
-)
-
-# Or serve the JWKS from somewhere other than the token's `iss`.
-facilitator = AgentPayFacilitatorClient(
-    seller_key_resolver=JwksSellerKeyResolver(jwks_url="https://keys.your-service.com")
-)
+facilitator = register_exact_agentic_commerce_facilitator(x402Facilitator(), verifier=verifier)
 ```
-
-An explicit resolver supersedes `iss` entirely — the issuer is never fetched. Both
-resolvers are also accepted by the resource-server builders as `seller_key_resolver`.
-
-### Advertising what you support
-
-`get_supported()` returns Agent Pay's `/.well-known/x402-supported` document. Pass
-`network_filter` to a facilitator client to narrow the advertised kinds to the networks
-you actually registered, so you don't claim networks you can't serve:
-
-```python
-facilitator = AgentPayFacilitatorClient(network_filter={"aws:base"})
-supported = facilitator.get_supported()   # {"kinds": [{... "network": "aws:base"}]}
-```
-
----
-
-## Web middleware (all-in-one)
-
-For sellers who want automatic 402 generation, verification, and settlement on protected
-routes. The middleware wires up the signer, networks, and per-route pricing; after a
-verified payment the details are attached to the request.
-
-### FastAPI
-
-```python
-from fastapi import FastAPI, Request
-from fiat_extension_x402 import KmsSignerConfig, create_kms_signer
-from fiat_extension_x402.middleware.fastapi import (
-    AgentPayFastAPIMiddlewareConfig,
-    AgentPayRouteConfig,
-    agent_pay_fastapi_middleware,
-)
-
-app = FastAPI()
-signer = create_kms_signer(
-    KmsSignerConfig(key_arn="...", region="us-east-1", service_url="https://api.example.com")
-)
-
-agent_pay_fastapi_middleware(
-    AgentPayFastAPIMiddlewareConfig(
-        agent_pay_base_url="https://prod.agentpay.marketplace.aws.dev",
-        agent_pay_id="my-agent-pay-id",
-        signer=signer,
-        service_url="https://api.example.com",
-        networks=["aws:base"],
-        routes={
-            "GET /api/premium": AgentPayRouteConfig(
-                price="0.50", network="aws:base", pay_to="your-seller-id",
-                description="Premium content",
-            ),
-        },
-    )
-)(app)
-
-
-@app.get("/api/premium")
-async def premium(request: Request) -> dict[str, object]:
-    payment = request.state.agent_pay_payment  # set after verification
-    return {"data": "premium content", "payer": payment.payer}
-```
-
-The Flask middleware is identical in shape — `agent_pay_middleware(AgentPayMiddlewareConfig(...))(app)`
-from `fiat_extension_x402.middleware.flask`, with payment details on `g.agent_pay_payment`.
-Both are demonstrated in [`examples/`](./examples).
-
----
-
-## Payment flow
-
-```
-Buyer Agent                    Seller API                  Agent Pay Service
-     |                              |                              |
-     |--- GET /resource ----------->|                              |
-     |<-- 402 + signed quote -------|                              |
-     |                              |                              |
-     |--- CreateAgentPayment (SigV4) --------------------------->|
-     |<-- { paymentId, paymentToken } ---------------------------|
-     |                              |                              |
-     |--- GET /resource + token --->|                              |
-     |                              |-- verify (JWKS + amount) -->|
-     |<-- 200 OK + resource --------|                              |
-```
-
-See [docs/payment-flow.md](./docs/payment-flow.md) for the detailed sequence.
-
-## Key constants
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `AGENT_PAY_SCHEME` | `agent-pay` | x402 scheme identifier for Agent Pay |
-| `AGENT_PAY_AUDIENCE` | `aws:marketplace` | Required `aud` in quote tokens |
-| `PAYMENT_JWT_ISSUER` | `awsmp-agentpay.amazonaws.com` | `iss` in payment tokens |
-| `DEFAULT_NETWORK` | `aws:base` | Network identifier for AWS Marketplace |
-
-Import these from `fiat_extension_x402.constants`.
-
-## Supported algorithms
-
-| Curve | KMS key spec | KMS signing algorithm | JWT `alg` |
-|-------|--------------|-----------------------|-----------|
-| P-256 | `ECC_NIST_P256` | `ECDSA_SHA_256` | ES256 |
-| P-384 | `ECC_NIST_P384` | `ECDSA_SHA_384` | ES384 (default) |
-| P-521 | `ECC_NIST_P521` | `ECDSA_SHA_512` | ES512 |
-
-`KmsSignerConfig.algorithm` takes the KMS signing algorithm (default `ECDSA_SHA_384`).
-
-## DPoP (optional token security)
-
-Bind a payment token to the buyer's ephemeral key (RFC 9449) so a stolen token cannot be
-replayed. The buyer generates a key pair, attaches its public JWK to the payment request,
-and presents a proof on each retry; the verifier checks the proof against the token's
-`cnf.jkt` binding.
-
-```python
-from fiat_extension_x402 import (
-    AgentPayClientOptions,
-    create_agent_pay_client,
-    generate_dpop_keypair,
-    to_dpop_jwk,
-)
-
-keypair = generate_dpop_keypair("ES256")  # ES256 / ES384 / ES512 (EC keys only)
-
-# Configure the key once; every payment the buyer creates is bound to it.
-buyer = create_agent_pay_client(
-    AgentPayClientOptions(
-        agent_pay_id="YOUR_AWS_ACCOUNT_ID",
-        credentials=create_env_credential_provider(),
-        dpop_jwk=to_dpop_jwk(keypair),
-    )
-)
-buyer.register_network("aws:base")
-payload = buyer.create_payment_payload(payment_required)
-```
-
-Or per call on the direct API:
-
-```python
-from fiat_extension_x402.schemas import CreateAgentPaymentRequest
-
-payment = client.create_payment(
-    CreateAgentPaymentRequest(quote_token=quote_token, dpop_jwk=to_dpop_jwk(keypair))
-)
-```
-
-When verifying a DPoP-bound token, pass the proof via `verify_options`:
-
-```python
-from fiat_extension_x402 import create_dpop_proof
-
-proof = create_dpop_proof(keypair, {"htm": "GET", "htu": "https://api.example.com/resource"})
-result = facilitator.verify(
-    payment_token, expected_quote_token, requirements,
-    verify_options={"dpop_proof": proof, "method": "GET", "url": "https://api.example.com/resource"},
-)
-```
-
-## Error handling
-
-All SDK errors derive from `AgentPayError`:
-
-```python
-from fiat_extension_x402 import (
-    AgentPayError,
-    DPoPError,
-    ExpiryError,
-    IdempotencyConflictError,
-    MismatchError,
-    SignatureError,
-    ValidationError,
-)
-```
-
-| Error | When it's raised |
-|-------|------------------|
-| `ValidationError` | Schema/format failures, missing fields, failed API calls |
-| `SignatureError` | JWT signature verification failed |
-| `ExpiryError` | A token's `exp` is in the past |
-| `MismatchError` | Expected vs. actual mismatch during verification |
-| `DPoPError` | DPoP proof verification failed |
-| `IdempotencyConflictError` | A `clientToken` was reused with different parameters |
-
-Note that `AgentPayFacilitatorClient.verify` does not raise on a bad payment — it returns
-a `VerifyResponse` with `is_valid=False` and an `invalid_reason`.
-
-## Examples
-
-See [`examples/`](./examples) for runnable code:
-
-- [`end_to_end_demo.py`](./examples/end_to_end_demo.py) — the full flow in-process, no AWS
-  account or network required (`python examples/end_to_end_demo.py`).
-- [`fastapi_app.py`](./examples/fastapi_app.py) / [`flask_app.py`](./examples/flask_app.py)
-  — protecting routes with the middleware.
 
 ## Development
 
-This is a standard [hatchling](https://hatch.pypa.io/) project — it builds with the
-PEP 517 toolchain (`python -m build`). Set up a virtualenv and install the package with
-its dev extras:
-
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+uv venv && uv pip install -e ".[dev]"
+.venv/bin/pytest --cov=fiat_extension_x402 --cov-branch
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/mypy --strict src tests
 ```
 
-Run the checks:
+## Security
 
-```bash
-pytest              # unit + integration tests (e2e deselected by default)
-ruff check .        # lint
-ruff format --check .  # formatting
-mypy src tests      # static types (strict)
-```
-
-## Testing
-
-The test suite has three tiers under `tests/`:
-
-| Tier | Path | Network / credentials | Default `pytest`? |
-|------|------|-----------------------|-------------------|
-| Unit | `tests/unit/` | None (fully mocked) | Yes |
-| Integration | `tests/integration/` | None — in-process flow with mocked JWKS | Yes |
-| End-to-end | `tests/e2e/` | Live Agent Pay service + AWS credentials | No (marked `e2e`, deselected) |
-
-### Unit and integration tests
-
-These are hermetic — no network, no credentials — and run by default:
-
-```bash
-pytest                          # unit + integration
-pytest tests/unit               # unit only
-pytest tests/integration        # in-process integration only
-pytest --cov=fiat_extension_x402 --cov-report=term-missing   # with coverage
-```
-
-The integration tier wires the SDK's real components (server scheme → payment
-token → facilitator verify/settle) into the full payment flow, serving all JWKS
-endpoints from in-memory mocks (`respx`). No setup is required.
-
-### End-to-end tests (live service)
-
-The `tests/e2e/` suite drives the full buyer → service → seller flow against a
-real Agent Pay endpoint. It is marked `e2e` and **deselected by default**
-(`addopts = "-m 'not e2e'"`), so a bare `pytest` never runs it. Run it
-explicitly:
-
-```bash
-pytest -m e2e tests/e2e
-```
-
-When the required configuration is not present, the e2e tests **skip** (they do
-not fail), so this is safe to run anywhere.
-
-> **Use the prod endpoint** (`https://prod.agentpay.marketplace.aws.dev`). Other
-> stages lack a registered test seller, so the live-acceptance tests skip there.
-
-#### Prerequisites
-
-1. **Buyer AWS credentials** — resolved from the ambient AWS profile/environment
-   (standard `AWS_*` variables or an active profile). The buyer identity must be
-   allowed to call the Agent Pay APIs (`CreateAgentPayment`, `GetAgentPayment`,
-   `ListAgentPayments`) and be allowlisted by the service.
-
-2. **A registered seller** — a quote token signing key (KMS or self-hosted JWKS)
-   whose public key is registered on a seller listing, and the listing's product
-   id. The seller's `iss` must match its registered endpoint URL.
-
-3. **Environment variables** (the e2e fixtures read these; any unset → skip):
-
-   | Variable | Meaning |
-   |----------|---------|
-   | `AGENTPAY_URL` | Agent Pay service base URL |
-   | `AGENTPAY_SELLER_KMS_KEY_ARN` | Seller quote-signing KMS key ARN (ECC_NIST_P384 / ES384) |
-   | `AGENTPAY_SELLER_REGION` | Region of the seller KMS key (default `us-east-1`) |
-   | `AGENTPAY_SELLER_SERVICE_URL` | Seller service URL — returns the 402 quote and serves the seller JWKS |
-   | `AGENTPAY_SELLER_PROFILE` | *Optional* AWS profile for the seller account that owns the KMS key |
-
-   The buyer (SigV4) and seller (KMS signing) are typically **different AWS
-   accounts**. Buyer credentials come from the ambient profile (`AWS_PROFILE` /
-   `AWS_*`); the seller KMS client is built from `AGENTPAY_SELLER_PROFILE` when
-   set, so the two never have to share one profile. The happy-path tests source
-   their quote from the seller's live HTTP 402 response (the authoritative,
-   service-registered quote); the KMS signer is used only by the negative-path
-   tests. When the target stage does not recognise the configured test seller,
-   the service-acceptance tests **skip** (they do not fail).
-
-   Example (values are placeholders — supply your own):
-
-   ```bash
-   export AGENTPAY_URL="https://prod.agentpay.marketplace.aws.dev"  # prod only for now
-   export AGENTPAY_SELLER_KMS_KEY_ARN="arn:aws:kms:us-east-1:<account>:key/<key-id>"
-   export AGENTPAY_SELLER_REGION="us-east-1"
-   export AGENTPAY_SELLER_SERVICE_URL="https://<seller-endpoint>"
-   export AGENTPAY_SELLER_PROFILE="<seller-profile>"   # seller KMS account
-   # Buyer credentials come from the active AWS profile, e.g.:
-   export AWS_PROFILE="<buyer-profile>"
-
-   pytest -m e2e tests/e2e
-   ```
-
-   Do not commit real account ids, key ARNs, or endpoints — keep them in your
-   shell environment or an untracked `.env`.
-
-## Build
-
-Produce the distributable wheel and source archive (these are what get published to
-PyPI):
-
-```bash
-pip install build
-python -m build     # writes dist/*.whl and dist/*.tar.gz
-```
-
-## Documentation
-
-- [docs/sdk-guide.md](./docs/sdk-guide.md) — how the SDK works, the two-token model,
-  verification logic, sentinels, authentication, DPoP, caching, and the error hierarchy.
-- [docs/payment-flow.md](./docs/payment-flow.md) — the end-to-end payment sequence.
+See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
 
 ## License
 
-Apache-2.0
+This project is licensed under the Apache-2.0 License.

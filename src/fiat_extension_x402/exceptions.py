@@ -1,14 +1,14 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Error classes for the Agent Pay scheme."""
+"""Error classes for the AWS Marketplace Agentic Commerce x402 extension."""
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
 
-class AgentPayError(Exception):
-    """Base error class for all Agent Pay-related errors."""
+class AgenticCommerceError(Exception):
+    """Base error class for all errors raised by this package."""
 
     def __init__(
         self,
@@ -21,48 +21,37 @@ class AgentPayError(Exception):
         self.details = details
 
 
-class ValidationError(AgentPayError):
-    """Error thrown when validation fails."""
+class ValidationError(AgenticCommerceError):
+    """Error raised when input or configuration is invalid."""
 
     def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
         super().__init__(message, "VALIDATION_ERROR", details)
 
 
-class IdempotencyConflictError(AgentPayError):
-    """Error thrown when a clientToken is reused with different request parameters.
+class SigningError(AgenticCommerceError):
+    """Error raised when quote token signing fails."""
 
-    The same clientToken with the same parameters returns the cached response
-    (idempotency). A different set of parameters triggers this error (HTTP 409).
-    """
-
-    def __init__(self, client_token: str, message: Optional[str] = None) -> None:
-        super().__init__(
-            message
-            or f'Idempotency conflict: clientToken "{client_token}" was used with '
-            "different parameters",
-            "IDEMPOTENCY_CONFLICT",
-            {"client_token": client_token},
-        )
-        self.client_token = client_token
+    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
+        super().__init__(message, "SIGNING_ERROR", details)
 
 
-class DPoPError(AgentPayError):
-    """Error thrown when DPoP key generation or thumbprint computation fails."""
+class DPoPError(AgenticCommerceError):
+    """Error raised when a DPoP proof is invalid."""
 
     def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
         super().__init__(message, "DPOP_ERROR", details)
 
 
-class SignatureError(AgentPayError):
-    """Error thrown when token signature verification fails."""
+class SignatureError(AgenticCommerceError):
+    """Error raised when a token signature cannot be verified."""
 
     def __init__(self, message: str, token_type: str) -> None:
         super().__init__(message, "SIGNATURE_ERROR", {"token_type": token_type})
         self.token_type = token_type
 
 
-class ExpiryError(AgentPayError):
-    """Error thrown when a token has expired."""
+class ExpiryError(AgenticCommerceError):
+    """Error raised when a token has expired."""
 
     def __init__(self, message: str, expiry: int, current_time: int) -> None:
         super().__init__(message, "EXPIRY_ERROR", {"expiry": expiry, "current_time": current_time})
@@ -70,8 +59,8 @@ class ExpiryError(AgentPayError):
         self.current_time = current_time
 
 
-class MismatchError(AgentPayError):
-    """Error thrown when an expected value does not match the actual value."""
+class MismatchError(AgenticCommerceError):
+    """Error raised when an expected value does not match the actual value."""
 
     def __init__(self, message: str, expected: str, actual: str) -> None:
         super().__init__(message, "MISMATCH_ERROR", {"expected": expected, "actual": actual})
@@ -80,11 +69,11 @@ class MismatchError(AgentPayError):
 
 
 __all__ = [
-    "AgentPayError",
+    "AgenticCommerceError",
     "DPoPError",
     "ExpiryError",
-    "IdempotencyConflictError",
     "MismatchError",
     "SignatureError",
+    "SigningError",
     "ValidationError",
 ]

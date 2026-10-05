@@ -1,81 +1,89 @@
-# Payment Flow
-
-The Agent Pay x402 payment flow involves three parties: the **buyer** (an AI agent), the
-**seller** (a resource service), and the **Agent Pay service** (the AWS Marketplace
-provider that authorizes and captures payments).
-
-## Sequence
+# Payment flow
 
 ```mermaid
 sequenceDiagram
-    participant Buyer as Buyer Agent
-    participant Seller as Seller API
-    participant AgentPay as Agent Pay Service
+    participant B as Buyer
+    participant S as Seller (x402 middleware + ExactAgenticCommerceServerScheme)
+    participant F as Facilitator (ExactAgenticCommerceFacilitatorScheme)
+    participant P as AWS Marketplace Agentic Commerce
 
-    Buyer->>Seller: 1. GET /resource
-    Seller-->>Buyer: 2. 402 Payment Required<br/>accepts[0].extra.quoteToken (signed by seller)
-
-    Buyer->>AgentPay: 3. POST /CreateAgentPayment (SigV4)<br/>{ quoteToken }
-    AgentPay->>AgentPay: verify quote, capture funds
-    AgentPay-->>Buyer: 4. { paymentId, paymentToken }<br/>(payment token signed by Agent Pay)
-
-    Buyer->>Seller: 5. GET /resource<br/>X-Payment: { paymentToken, paymentId }
-    Seller->>AgentPay: 6. fetch JWKS, verify payment token signature
-    Seller->>Seller: 7. match embedded quote, check amount + expiry
-    Seller-->>Buyer: 8. 200 OK + resource
+    B->>S: GET /resource
+    S->>S: parse_price, sign quote token (enhance_payment_requirements)
+    S-->>B: 402 PAYMENT-REQUIRED: exact / aws:base / extra.quoteToken
+    B->>P: request payment for the quote
+    P-->>B: payment token (signed by the service; payment captured)
+    B->>S: GET /resource + PAYMENT-SIGNATURE {accepted, payload.paymentToken} [+ DPoP]
+    S->>S: match accepted against the route's requirements (quoteToken excluded)
+    S->>S: before_verify: DPoP proof, if the token is DPoP-bound
+    S->>F: verify(payload, requirements)
+    F->>P: fetch payment token JWKS
+    F-->>S: valid
+    S->>S: run the route handler
+    S->>F: settle (no-op)
+    S-->>B: 200 + PAYMENT-RESPONSE {transaction: payment id}
 ```
 
-## ASCII version
+## 402 requirements
 
-```
-Buyer Agent                    Seller API                  Agent Pay Service
-     |                              |                              |
-     |  1. GET /resource            |                              |
-     |----------------------------->|                              |
-     |                              |                              |
-     |  2. 402 Payment Required     |                              |
-     |     { accepts: [{            |                              |
-     |        scheme: "agent-pay",  |                              |
-     |        network: "aws:base",  |                              |
-     |        amount: "0.15",       |                              |
-     |        asset: "iso4217:USD", |                              |
-     |        extra: {              |                              |
-     |          quoteToken: <JWT>   |  <- signed by seller         |
-     |        } }] }                |                              |
-     |<-----------------------------|                              |
-     |                              |                              |
-     |  3. POST /CreateAgentPayment (SigV4) { quoteToken }         |
-     |----------------------------------------------------------->|
-     |                              |                              |
-     |  4. { paymentId,             |                              |
-     |       paymentToken: <JWT> }  |  <- signed by Agent Pay      |
-     |<-----------------------------------------------------------|
-     |                              |                              |
-     |  5. GET /resource            |                              |
-     |     X-Payment: { paymentToken, paymentId }                 |
-     |----------------------------->|                              |
-     |                              |  6. fetch JWKS, verify       |
-     |                              |     payment token signature  |
-     |                              |---------------------------->|
-     |                              |  7. match embedded quote,    |
-     |                              |     check amount + expiry    |
-     |                              |                              |
-     |  8. 200 OK + resource        |                              |
-     |<-----------------------------|                              |
+```json
+{
+  "scheme": "exact",
+  "network": "aws:base",
+  "asset": "iso4217:USD",
+  "amount": "0.01",
+  "payTo": "urn:x402:agentic-commerce:see-quote",
+  "maxTimeoutSeconds": 300,
+  "extra": { "quoteToken": "<JWS signed by the seller>" }
+}
 ```
 
-## Steps in the SDK
+`payTo` is a placeholder: the signed quote carries the real payee. `amount` is a
+decimal fiat amount, not atomic units.
 
-| Step | Party | SDK call |
-|------|-------|----------|
-| 2 | Seller | `enhance_payment_requirements(requirements, signer)` — signs the quote token and embeds it in `extra.quoteToken` |
-| 3–4 | Buyer | `create_payment_payload(payment_required)` on a network-registered client — x402 core routes to the Agent Pay scheme, which calls `CreateAgentPayment`. (Direct alternative: `AgentPayClient.create_payment(CreateAgentPaymentRequest(quote_token=...))`) |
-| 5 | Buyer | `x402HTTPClientSync(...).encode_payment_signature_header(payload)` → `PAYMENT-SIGNATURE` (v2) or `X-PAYMENT` (v1), then retry the request |
-| 6–7 | Seller | `AgentPayFacilitatorClient.verify(payment_token, expected_quote_token, requirements)` |
-| 8 | Seller | Deliver the resource; `facilitator.settle(...)` is a no-op (auto-captured at step 3) |
+## Quote token claims
 
-The web middleware (`agent_pay_fastapi_middleware` / `agent_pay_middleware`) performs
-steps 2, 6, 7, and 8 automatically for the seller.
+| Claim | Value |
+|---|---|
+| `iss` | The seller's service URL |
+| `aud` | `aws:marketplace` |
+| `iat`, `exp` | Issue time and expiry (`maxTimeoutSeconds`, default 300) |
+| `jti` | Unique id |
+| `price` | `{"amount": "0.01", "currency": "USD"}` (at most 8 decimal places) |
+| `payTo` | The seller's AWS Marketplace product ID (route `pay_to`) |
+| `settlement` | `extra.settlement` plus `product_id` (the route `pay_to`); required by the payment service |
+| `reference` | `extra.reference`, default `RESOURCE` |
+| `description`, `dimensions`, `support`, `terms` | Copied from `extra` when present |
 
-A runnable version of this whole flow — with no network or AWS credentials — is in
-[`examples/end_to_end_demo.py`](../examples/end_to_end_demo.py).
+## Payment payload
+
+```json
+{
+  "x402Version": 2,
+  "accepted": { "...": "the requirements the buyer paid for" },
+  "payload": { "paymentToken": "<JWS signed by the service>" }
+}
+```
+
+## Checks
+
+The resource server (x402 core) checks that `accepted` matches the route's own
+requirements: scheme, network, amount, asset, payTo, maxTimeoutSeconds and
+`extra`, except the quote token, which is signed afresh for each 402.
+
+The seller scheme (`before_verify`) checks, for a DPoP-bound payment token
+(`cnf.jkt`): a `DPoP` header is present; its key thumbprint equals `cnf.jkt`; it
+is signed with an asymmetric algorithm; `htm` and `htu` match the request; `ath`
+is the hash of the payment token; it is no older than 60 seconds; and, with a
+nonce store, its `jti` has not been seen.
+
+The facilitator (`AgenticCommerceVerifier`) checks that:
+
+1. the payment token is signed by the service (its JWKS) with an allowed algorithm;
+2. its `iss` is the service and it has not expired;
+3. its `quote_token` equals the quote in `accepted`;
+4. the quote is signed by the seller's configured key;
+5. the payment token's `aud` is the quote's `iss`, and the quote has not expired;
+6. the quote's price equals the route's amount and currency.
+
+Failures return `invalid_payment`, `payment_expired`, `invalid_quote` or
+`quote_expired`; DPoP failures abort with `dpop_required` or `dpop_invalid`.
