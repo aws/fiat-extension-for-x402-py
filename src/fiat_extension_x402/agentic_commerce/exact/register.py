@@ -10,10 +10,14 @@ from fiat_extension_x402.agentic_commerce.exact.facilitator import (
     ExactAgenticCommerceScheme as ExactAgenticCommerceFacilitatorScheme,
 )
 from fiat_extension_x402.agentic_commerce.exact.server import (
+    _DEFAULT_DPOP_MAX_AGE_SECONDS,
+)
+from fiat_extension_x402.agentic_commerce.exact.server import (
     ExactAgenticCommerceScheme as ExactAgenticCommerceServerScheme,
 )
 from fiat_extension_x402.agentic_commerce.verifier import AgenticCommerceVerifier
 from fiat_extension_x402.constants import DEFAULT_NETWORK
+from fiat_extension_x402.dpop import DPoPNonceStore
 from fiat_extension_x402.signers.protocol import QuoteSigner
 
 _Server = TypeVar("_Server")
@@ -25,15 +29,24 @@ def register_exact_agentic_commerce_server(
     *,
     signer: QuoteSigner,
     networks: Optional[list[str]] = None,
+    dpop_nonce_store: Optional[DPoPNonceStore] = None,
+    dpop_max_age_seconds: int = _DEFAULT_DPOP_MAX_AGE_SECONDS,
 ) -> _Server:
     """Register the ``exact`` server scheme on an x402 resource server.
 
     :param server: ``x402ResourceServer`` or ``x402ResourceServerSync``.
     :param signer: Signs quote tokens.
     :param networks: Networks to register. Defaults to ``["aws:base"]``.
+    :param dpop_nonce_store: Records DPoP proof ``jti`` values so a replayed
+        proof is rejected. Use a store shared by all instances of the seller.
+    :param dpop_max_age_seconds: Maximum age of a DPoP proof. Defaults to 60.
     :returns: ``server``, for chaining.
     """
-    scheme = ExactAgenticCommerceServerScheme(signer=signer)
+    scheme = ExactAgenticCommerceServerScheme(
+        signer=signer,
+        dpop_nonce_store=dpop_nonce_store,
+        dpop_max_age_seconds=dpop_max_age_seconds,
+    )
     for network in networks or [DEFAULT_NETWORK]:
         server.register(network, scheme)  # type: ignore[attr-defined]
     return server
