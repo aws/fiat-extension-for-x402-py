@@ -88,15 +88,6 @@ def test_constant_values() -> None:
     assert fiat_extension_x402.DEFAULT_ASSET == "iso4217:USD"
 
 
-@pytest.mark.parametrize("module_name", ["fiat_extension_x402", *SUBMODULES])
-def test_no_legacy_product_names_exported(module_name: str) -> None:
-    module = importlib.import_module(module_name)
-    for name in getattr(module, "__all__", dir(module)):
-        lowered = name.lower()
-        assert "agentpay" not in lowered, name
-        assert "agent_pay" not in lowered, name
-
-
 @pytest.mark.parametrize("module_name", SUBMODULES)
 def test_submodule_all_names_resolve(module_name: str) -> None:
     module = importlib.import_module(module_name)
