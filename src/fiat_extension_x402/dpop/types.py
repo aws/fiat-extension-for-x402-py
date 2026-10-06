@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol, TypedDict
+from typing import Any, Protocol, TypedDict
 
 
 class DPoPProofPayload(TypedDict, total=False):
@@ -23,7 +23,7 @@ class DPoPVerificationOptions(TypedDict, total=False):
 
     htm: str
     htu: str
-    access_token: Optional[str]
+    access_token: str | None
     max_age: int
     nonce_store: Any
 

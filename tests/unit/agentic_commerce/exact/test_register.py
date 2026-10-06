@@ -35,6 +35,26 @@ class TestRegisterServer:
         scheme = server._schemes["aws:base"]["exact"]
         assert isinstance(scheme, ExactAgenticCommerceServerScheme)
         assert scheme.signer is signer
+        assert scheme._dpop_nonce_store is None
+        assert scheme._dpop_max_age_seconds == 60
+
+    def test_dpop_options_reach_the_scheme(self) -> None:
+        class _Store:
+            def has(self, jti: str) -> bool:
+                return False
+
+            def add(self, jti: str, expires_at: int) -> None:
+                pass
+
+        store = _Store()
+        server = x402ResourceServerSync()
+        register_exact_agentic_commerce_server(
+            server, signer=seller_signer(), dpop_nonce_store=store, dpop_max_age_seconds=30
+        )
+        scheme = server._schemes["aws:base"]["exact"]
+        assert isinstance(scheme, ExactAgenticCommerceServerScheme)
+        assert scheme._dpop_nonce_store is store
+        assert scheme._dpop_max_age_seconds == 30
 
     def test_custom_networks(self) -> None:
         server = x402ResourceServerSync()

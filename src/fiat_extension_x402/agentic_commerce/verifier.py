@@ -13,7 +13,7 @@ from __future__ import annotations
 import base64
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 import jwt
@@ -50,10 +50,10 @@ class VerificationResult:
     """
 
     is_valid: bool
-    invalid_reason: Optional[str] = None
-    invalid_message: Optional[str] = None
-    payer: Optional[str] = None
-    payment_id: Optional[str] = None
+    invalid_reason: str | None = None
+    invalid_message: str | None = None
+    payer: str | None = None
+    payment_id: str | None = None
 
 
 def _invalid(reason: str, message: str) -> VerificationResult:
@@ -91,8 +91,8 @@ class AgenticCommerceVerifier:
         self,
         *,
         seller_key_resolver: SellerKeyResolver,
-        payment_token_jwks_url: Optional[str] = None,
-        jwks_request_headers: Optional[dict[str, str]] = None,
+        payment_token_jwks_url: str | None = None,
+        jwks_request_headers: dict[str, str] | None = None,
         payment_token_issuer: str = PAYMENT_TOKEN_ISSUER,
     ) -> None:
         base = (payment_token_jwks_url or DEFAULT_PAYMENT_TOKEN_JWKS_BASE_URL).rstrip("/")

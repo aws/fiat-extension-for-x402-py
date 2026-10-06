@@ -13,6 +13,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Pinned so CI does not change when uv releases; bump deliberately.
+  UV_VERSION: "0.12.23"
+
 jobs:
   lint:
     name: Lint and typecheck
@@ -23,6 +27,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: "3.12"
       - run: uv sync --locked --extra dev
       - run: uv run ruff check .
@@ -35,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12", "3.13"]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         # "minimum" is the lowest x402 version pyproject.toml allows; "locked"
         # is the version in uv.lock, kept current by Dependabot.
         x402: [minimum, locked]
@@ -45,11 +50,31 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python }}
       - run: uv sync --locked --extra dev
       - name: Install the minimum supported x402
         if: matrix.x402 == 'minimum'
-        run: uv pip install "x402[fastapi,flask]==2.20.0"
+        # Read the lower bound from pyproject.toml so this job follows it. Runs
+        # on Python 3.12 because tomllib is not in 3.10.
+        run: |
+          minimum="$(uv run --no-project --isolated --python 3.12 python - <<'PY'
+          import re
+          import tomllib
+
+          with open("pyproject.toml", "rb") as f:
+              dependencies = tomllib.load(f)["project"]["dependencies"]
+          for dependency in dependencies:
+              match = re.match(r"x402\s*>=\s*([0-9][0-9A-Za-z.]*)", dependency)
+              if match:
+                  print(match.group(1))
+                  break
+          else:
+              raise SystemExit("pyproject.toml has no 'x402>=' dependency")
+          PY
+          )"
+          echo "Minimum x402: $minimum"
+          uv pip install "x402[fastapi,flask]==$minimum"
       - run: uv run --no-sync pytest --cov=fiat_extension_x402 --cov-branch --cov-fail-under=100
 
   build:
@@ -61,6 +86,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: "3.12"
       - run: uv build
       - name: Install the wheel in a clean environment

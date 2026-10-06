@@ -48,7 +48,7 @@ def verify_dpop_proof(proof: str, options: dict[str, Any]) -> dict[str, Any]:
     """
     try:
         unverified_header = pyjwt.get_unverified_header(proof)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise DPoPError("Invalid DPoP proof: cannot decode header", {"error": str(exc)}) from exc
 
     # 1. Check typ
@@ -141,7 +141,7 @@ def extract_dpop_thumbprint(proof: str) -> str:
     """
     try:
         unverified_header = pyjwt.get_unverified_header(proof)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise DPoPError(
             "Cannot extract thumbprint: invalid DPoP proof", {"error": str(exc)}
         ) from exc

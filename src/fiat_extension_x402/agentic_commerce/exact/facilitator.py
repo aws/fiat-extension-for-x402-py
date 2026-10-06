@@ -12,7 +12,7 @@ process (no network hop) or as a separate service::
 
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import Any
 
 import jwt
 from x402.schemas import (
@@ -27,8 +27,8 @@ from x402.schemas import (
 from fiat_extension_x402.agentic_commerce.verifier import AgenticCommerceVerifier
 from fiat_extension_x402.constants import AGENTIC_COMMERCE_CAIP_FAMILY, SCHEME_EXACT
 
-_AnyPayload = Union[PaymentPayload, PaymentPayloadV1]
-_AnyRequirements = Union[PaymentRequirements, PaymentRequirementsV1]
+_AnyPayload = PaymentPayload | PaymentPayloadV1
+_AnyRequirements = PaymentRequirements | PaymentRequirementsV1
 
 
 class ExactAgenticCommerceScheme:

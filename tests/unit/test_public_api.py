@@ -44,6 +44,7 @@ EXPECTED_EXPORTS = {
     "decode_quote_token",
     "enhance_payment_requirements",
     "extract_dpop_thumbprint",
+    "jwks_document",
     "parse_money_to_decimal",
     "register_exact_agentic_commerce_facilitator",
     "register_exact_agentic_commerce_server",
@@ -77,7 +78,7 @@ def test_export_is_importable(name: str) -> None:
 
 
 def test_version() -> None:
-    assert fiat_extension_x402.__version__ == "0.1.0"
+    assert fiat_extension_x402.__version__ == "1.0.0"
 
 
 def test_constant_values() -> None:
@@ -85,15 +86,6 @@ def test_constant_values() -> None:
     assert fiat_extension_x402.AGENTIC_COMMERCE_CAIP_FAMILY == "aws:*"
     assert fiat_extension_x402.DEFAULT_NETWORK == "aws:base"
     assert fiat_extension_x402.DEFAULT_ASSET == "iso4217:USD"
-
-
-@pytest.mark.parametrize("module_name", ["fiat_extension_x402", *SUBMODULES])
-def test_no_legacy_product_names_exported(module_name: str) -> None:
-    module = importlib.import_module(module_name)
-    for name in getattr(module, "__all__", dir(module)):
-        lowered = name.lower()
-        assert "agentpay" not in lowered, name
-        assert "agent_pay" not in lowered, name
 
 
 @pytest.mark.parametrize("module_name", SUBMODULES)

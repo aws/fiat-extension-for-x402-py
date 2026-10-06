@@ -109,9 +109,11 @@ class TestUtilsAdditional:
         """A non-signature PyJWTError (e.g. DecodeError) raises SignatureError (line 55-56)."""
         key = generate_private_key(SECP256R1())
         token = pyjwt.encode({"iss": "test"}, key, algorithm="ES256")
-        with patch("fiat_extension_x402.utils.pyjwt.decode", side_effect=pyjwt.DecodeError("boom")):
-            with pytest.raises(SignatureError, match="verification failed"):
-                verify_quote_token(token, key.public_key())
+        with (
+            patch("fiat_extension_x402.utils.pyjwt.decode", side_effect=pyjwt.DecodeError("boom")),
+            pytest.raises(SignatureError, match="verification failed"),
+        ):
+            verify_quote_token(token, key.public_key())
 
     def test_verify_payment_token_invalid_signature(self) -> None:
         """A bad signature raises SignatureError (line 85-86)."""
@@ -125,9 +127,11 @@ class TestUtilsAdditional:
         """A non-signature PyJWTError (e.g. DecodeError) raises SignatureError (line 87-88)."""
         key = generate_private_key(SECP256R1())
         token = pyjwt.encode({"iss": "payment-service"}, key, algorithm="ES256")
-        with patch("fiat_extension_x402.utils.pyjwt.decode", side_effect=pyjwt.DecodeError("boom")):
-            with pytest.raises(SignatureError, match="verification failed"):
-                verify_payment_token(token, key.public_key())
+        with (
+            patch("fiat_extension_x402.utils.pyjwt.decode", side_effect=pyjwt.DecodeError("boom")),
+            pytest.raises(SignatureError, match="verification failed"),
+        ):
+            verify_payment_token(token, key.public_key())
 
     def test_parse_money_bare_numeric_string(self) -> None:
         """parse_money_to_decimal handles bare numeric string."""

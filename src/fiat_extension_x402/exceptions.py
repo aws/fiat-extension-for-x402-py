@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 
 class AgenticCommerceError(Exception):
@@ -14,7 +14,7 @@ class AgenticCommerceError(Exception):
         self,
         message: str,
         code: str,
-        details: Optional[dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -24,21 +24,21 @@ class AgenticCommerceError(Exception):
 class ValidationError(AgenticCommerceError):
     """Error raised when input or configuration is invalid."""
 
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message, "VALIDATION_ERROR", details)
 
 
 class SigningError(AgenticCommerceError):
     """Error raised when quote token signing fails."""
 
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message, "SIGNING_ERROR", details)
 
 
 class DPoPError(AgenticCommerceError):
     """Error raised when a DPoP proof is invalid."""
 
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message, "DPOP_ERROR", details)
 
 

@@ -7,13 +7,15 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any
 
 import boto3  # type: ignore[import-untyped]
 import httpx
 import jwt
 import pytest
 import respx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from moto import mock_aws
 
 from fiat_extension_x402.agentic_commerce import verifier as verifier_module
@@ -22,6 +24,7 @@ from fiat_extension_x402.agentic_commerce.keys import (
     KmsSellerKeyResolver,
     SellerKeyResolver,
     StaticSellerKeyResolver,
+    jwks_document,
 )
 from fiat_extension_x402.agentic_commerce.quote import enhance_payment_requirements
 from fiat_extension_x402.agentic_commerce.verifier import (
@@ -33,7 +36,12 @@ from fiat_extension_x402.constants import (
     PAYMENT_TOKEN_ISSUER,
     QUOTE_TOKEN_AUDIENCE,
 )
-from fiat_extension_x402.signers import KmsQuoteSigner, KmsQuoteSignerConfig, QuoteSigner
+from fiat_extension_x402.signers import (
+    KmsQuoteSigner,
+    KmsQuoteSignerConfig,
+    LocalQuoteSigner,
+    QuoteSigner,
+)
 from tests.support import (
     SELLER_URL,
     SERVICE_JWKS_BASE_URL,
@@ -84,7 +92,7 @@ def _static(signer: Any) -> AgenticCommerceVerifier:
 def _service_token(
     service: FakePaymentService,
     claims: dict[str, Any],
-    headers: Optional[dict[str, Any]] = None,
+    headers: dict[str, Any] | None = None,
 ) -> str:
     token: str = jwt.encode(
         claims,
@@ -686,3 +694,45 @@ class TestKeyResolvers:
         b = KmsSellerKeyResolver("arn", "us-east-1", kms_client=object())
         assert a == b
         assert "kms_client" not in repr(a)
+
+
+def _pem_signer(kid: str) -> LocalQuoteSigner:
+    pem = ec.generate_private_key(ec.SECP384R1()).private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    return LocalQuoteSigner.from_pem(pem, kid=kid, service_url=SELLER_URL)
+
+
+class TestSellerOwnKeyWithJwks:
+    """A seller signs with its own PEM key and serves the JWKS itself."""
+
+    def test_quotes_signed_with_current_or_previous_key_verify(
+        self, mock_router: respx.MockRouter, service: FakePaymentService
+    ) -> None:
+        current, previous = _pem_signer("2026-10"), _pem_signer("2026-04")
+        mock_router.get(SELLER_JWKS_URL).mock(
+            return_value=httpx.Response(
+                200, json=jwks_document(current.public_jwk, previous.public_jwk)
+            )
+        )
+        verifier = _verifier(JwksSellerKeyResolver(SELLER_URL))
+
+        for signer in (current, previous):
+            requirements = _requirements(signer)
+            token = service.issue(requirements["extra"]["quoteToken"])
+            assert verifier.verify(token, requirements).is_valid is True
+
+    def test_retired_key_is_rejected(
+        self, mock_router: respx.MockRouter, service: FakePaymentService
+    ) -> None:
+        current, retired = _pem_signer("2026-10"), _pem_signer("2026-04")
+        mock_router.get(SELLER_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=jwks_document(current.public_jwk))
+        )
+        requirements = _requirements(retired)
+        token = service.issue(requirements["extra"]["quoteToken"])
+
+        result = _verifier(JwksSellerKeyResolver(SELLER_URL)).verify(token, requirements)
+        _assert_invalid(result, "invalid_quote", "No matching key found in JWKS")
