@@ -13,7 +13,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 import boto3  # type: ignore[import-untyped]
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
@@ -70,7 +70,7 @@ class KmsQuoteSignerConfig:
     region: str
     service_url: str
     algorithm: str = "ECDSA_SHA_384"
-    kid: Optional[str] = None
+    kid: str | None = None
     # Allow injecting a pre-configured KMS client (useful for testing).
     _kms_client: Any = field(default=None, repr=False, compare=False)
 

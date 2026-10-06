@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any
 
 import boto3  # type: ignore[import-untyped]
 import httpx
@@ -92,7 +92,7 @@ def _static(signer: Any) -> AgenticCommerceVerifier:
 def _service_token(
     service: FakePaymentService,
     claims: dict[str, Any],
-    headers: Optional[dict[str, Any]] = None,
+    headers: dict[str, Any] | None = None,
 ) -> str:
     token: str = jwt.encode(
         claims,

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 import jwt
 import pytest
@@ -65,7 +65,7 @@ class TestLocalQuoteSigner:
             LocalQuoteSigner(key, {**jwk, member: "secret"}, SELLER_URL)
 
 
-def _pem(key: Any, password: Optional[bytes] = None) -> bytes:
+def _pem(key: Any, password: bytes | None = None) -> bytes:
     encryption = (
         serialization.BestAvailableEncryption(password)
         if password

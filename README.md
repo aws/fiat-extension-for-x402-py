@@ -69,7 +69,9 @@ server = register_exact_agentic_commerce_server(x402ResourceServer(facilitator),
 
 routes = {
     "GET /weather": RouteConfig(
-        accepts=PaymentOption(scheme="exact", network="aws:base", pay_to="prod-example123", price="$0.01"),
+        accepts=PaymentOption(
+            scheme="exact", network="aws:base", pay_to="prod-example123", price="$0.01"
+        ),
         description="Current weather",
     ),
 }
@@ -238,12 +240,12 @@ Other quote details come from the route's `extra`:
 PaymentOption(
     scheme="exact",
     network="aws:base",
-    pay_to="prod-abc123",            # AWS Marketplace product ID
-    price="$0.01",                   # at most 8 decimal places
+    pay_to="prod-abc123",  # AWS Marketplace product ID
+    price="$0.01",  # at most 8 decimal places
     extra={
         "description": "Current weather",
         "dimensions": {"calls": 1},
-        "settlement": {"mode": "immediate"},   # product_id is added for you
+        "settlement": {"mode": "immediate"},  # product_id is added for you
         "reference": "weather-v1",
     },
 )

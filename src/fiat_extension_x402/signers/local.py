@@ -13,7 +13,7 @@ prefer the private key never to leave AWS use
 from __future__ import annotations
 
 import json
-from typing import Any, Optional, Union
+from typing import Any
 
 import jwt as pyjwt
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
@@ -45,7 +45,7 @@ class LocalQuoteSigner:
 
     def __init__(
         self,
-        private_key: Union[EllipticCurvePrivateKey, RSAPrivateKey],
+        private_key: EllipticCurvePrivateKey | RSAPrivateKey,
         public_jwk: dict[str, str],
         service_url: str,
     ) -> None:
@@ -72,11 +72,11 @@ class LocalQuoteSigner:
     @classmethod
     def from_pem(
         cls,
-        pem: Union[str, bytes],
+        pem: str | bytes,
         *,
         kid: str,
         service_url: str,
-        password: Optional[bytes] = None,
+        password: bytes | None = None,
     ) -> LocalQuoteSigner:
         """Create a signer from a PEM-encoded private key.
 

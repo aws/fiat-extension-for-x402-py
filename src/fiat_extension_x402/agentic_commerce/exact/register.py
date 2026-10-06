@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, TypeVar
+from typing import TypeVar
 
 from fiat_extension_x402.agentic_commerce.exact.facilitator import (
     ExactAgenticCommerceScheme as ExactAgenticCommerceFacilitatorScheme,
@@ -28,8 +28,8 @@ def register_exact_agentic_commerce_server(
     server: _Server,
     *,
     signer: QuoteSigner,
-    networks: Optional[list[str]] = None,
-    dpop_nonce_store: Optional[DPoPNonceStore] = None,
+    networks: list[str] | None = None,
+    dpop_nonce_store: DPoPNonceStore | None = None,
     dpop_max_age_seconds: int = _DEFAULT_DPOP_MAX_AGE_SECONDS,
 ) -> _Server:
     """Register the ``exact`` server scheme on an x402 resource server.
@@ -56,7 +56,7 @@ def register_exact_agentic_commerce_facilitator(
     facilitator: _Facilitator,
     *,
     verifier: AgenticCommerceVerifier,
-    networks: Optional[list[str]] = None,
+    networks: list[str] | None = None,
 ) -> _Facilitator:
     """Register the ``exact`` facilitator scheme on an x402 facilitator.
 

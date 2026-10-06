@@ -14,7 +14,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -31,8 +31,11 @@ def _b64(n: int, length: int) -> str:
     return base64.urlsafe_b64encode(n.to_bytes(length, "big")).rstrip(b"=").decode()
 
 
+_P256 = ec.SECP256R1()
+
+
 def ec_key(
-    kid: str, curve: ec.EllipticCurve = ec.SECP256R1(), alg: str = "ES256"
+    kid: str, curve: ec.EllipticCurve = _P256, alg: str = "ES256"
 ) -> tuple[ec.EllipticCurvePrivateKey, dict[str, str]]:
     """Return an EC private key and its public JWK."""
     private_key = ec.generate_private_key(curve)
@@ -76,7 +79,7 @@ class FakePaymentService:
         *,
         audience: str = SELLER_URL,
         buyer: str = "123456789012",
-        dpop_jwk: Optional[dict[str, str]] = None,
+        dpop_jwk: dict[str, str] | None = None,
         issuer: str = PAYMENT_TOKEN_ISSUER,
         expires_in: int = 300,
     ) -> str:
@@ -106,8 +109,8 @@ def dpop_proof(
     *,
     htm: str,
     htu: str,
-    access_token: Optional[str] = None,
-    iat: Optional[int] = None,
+    access_token: str | None = None,
+    iat: int | None = None,
 ) -> str:
     """Create a DPoP proof (RFC 9449) as a buyer would."""
     public_jwk = {k: jwk[k] for k in ("kty", "crv", "x", "y")}

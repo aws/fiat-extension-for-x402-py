@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any
 
 import jwt
 import pytest
@@ -28,12 +28,12 @@ URL = f"{SELLER_URL}/weather"
 class _FakeAdapter:
     """The subset of x402's HTTP adapter that the scheme uses."""
 
-    def __init__(self, method: str, url: str, headers: Optional[dict[str, str]] = None) -> None:
+    def __init__(self, method: str, url: str, headers: dict[str, str] | None = None) -> None:
         self._method = method
         self._url = url
         self._headers = headers or {}
 
-    def get_header(self, name: str) -> Optional[str]:
+    def get_header(self, name: str) -> str | None:
         return self._headers.get(name)
 
     def get_method(self) -> str:
@@ -72,7 +72,7 @@ def _base_requirements() -> PaymentRequirements:
 
 def _context(
     payment_payload: dict[str, Any],
-    adapter: Optional[_FakeAdapter] = None,
+    adapter: _FakeAdapter | None = None,
     transport_context: Any = "unset",
 ) -> VerifyContext:
     requirements = _base_requirements()

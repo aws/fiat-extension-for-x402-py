@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
-from typing import Any, Optional
+from types import MappingProxyType
+from typing import Any
 
 import jwt
 from x402.schemas import AbortResult, AssetAmount, PaymentRequirements, Price, SupportedKind
@@ -58,9 +59,9 @@ class ExactAgenticCommerceScheme:
     default_asset_transfer_method = ASSET_TRANSFER_METHOD
     # Verify before the handler runs; settlement after it is a no-op because the
     # service captures the payment when it issues the payment token.
-    payment_flows = {
-        ASSET_TRANSFER_METHOD: {"supported": ("authorization",), "default": "authorization"},
-    }
+    payment_flows = MappingProxyType(
+        {ASSET_TRANSFER_METHOD: {"supported": ("authorization",), "default": "authorization"}}
+    )
     # The quote token is signed fresh for every 402, so x402 core ignores it when
     # matching a buyer's ``accepted`` requirements against the route's. The
     # facilitator checks the quote instead.
@@ -70,7 +71,7 @@ class ExactAgenticCommerceScheme:
         self,
         *,
         signer: QuoteSigner,
-        dpop_nonce_store: Optional[DPoPNonceStore] = None,
+        dpop_nonce_store: DPoPNonceStore | None = None,
         dpop_max_age_seconds: int = _DEFAULT_DPOP_MAX_AGE_SECONDS,
     ) -> None:
         self._signer = signer
@@ -118,14 +119,14 @@ class ExactAgenticCommerceScheme:
     def enhance_payment_requirements(
         self,
         requirements: PaymentRequirements,
-        supported_kind: Optional[SupportedKind] = None,
-        extensions: Optional[list[str]] = None,
+        supported_kind: SupportedKind | None = None,
+        extensions: list[str] | None = None,
     ) -> PaymentRequirements:
         """Sign a quote token for the requirements and embed it in ``extra.quoteToken``."""
         base: dict[str, Any] = requirements.model_dump(by_alias=True, exclude_none=True)
         return PaymentRequirements.model_validate(enhance_payment_requirements(base, self._signer))
 
-    def before_verify(self, context: VerifyContext) -> Optional[AbortResult]:
+    def before_verify(self, context: VerifyContext) -> AbortResult | None:
         """Check the DPoP proof of a DPoP-bound payment token.
 
         A payment token bound to a key (``cnf.jkt``) is accepted only with a

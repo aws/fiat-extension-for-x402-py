@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Union
+from typing import Any
 
 import jwt as pyjwt
 
@@ -24,7 +24,7 @@ def decode_quote_token(token: str) -> dict[str, Any]:
     try:
         claims: dict[str, Any] = pyjwt.decode(token, options={"verify_signature": False})
         return claims
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ValidationError(f"Invalid quote token format: {exc}") from exc
 
 
@@ -93,7 +93,7 @@ def verify_payment_token(token: str, public_key: Any) -> dict[str, Any]:
 _MONEY_PATTERN = re.compile(r"^\$?(\d+\.?\d*)\s*([A-Z]{3})?$")
 
 
-def parse_money_to_decimal(money: Union[str, int, float]) -> dict[str, Any]:
+def parse_money_to_decimal(money: str | float) -> dict[str, Any]:
     """Parse a monetary value to amount and currency.
 
     Supports formats: ``"$1.50"``, ``"1.50 USD"``, or numeric values (assumed USD).

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union
+from typing import Any
 
 import jwt
 
@@ -30,7 +30,7 @@ class KmsSellerKeyResolver:
 
     kms_key_arn: str
     region: str
-    credentials: Optional[Callable[[], Any]] = None
+    credentials: Callable[[], Any] | None = None
     # Allow injecting a pre-configured KMS client (useful for testing).
     kms_client: Any = field(default=None, repr=False, compare=False)
 
@@ -57,7 +57,7 @@ class StaticSellerKeyResolver:
 
 #: Strategy for locating the seller's quote-signing key. The key is always
 #: configured by the seller, never discovered from the quote token itself.
-SellerKeyResolver = Union[KmsSellerKeyResolver, JwksSellerKeyResolver, StaticSellerKeyResolver]
+SellerKeyResolver = KmsSellerKeyResolver | JwksSellerKeyResolver | StaticSellerKeyResolver
 
 
 def jwks_document(*public_jwks: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
