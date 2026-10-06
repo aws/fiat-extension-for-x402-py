@@ -28,6 +28,9 @@ PRIVATE_JWK_MEMBERS = frozenset({"d", "p", "q", "dp", "dq", "qi", "oth", "k"})
 # JWS algorithm for each supported EC curve.
 _EC_ALGORITHMS = {"secp256r1": "ES256", "secp384r1": "ES384", "secp521r1": "ES512"}
 
+# Smallest RSA modulus accepted for quote signing (NIST SP 800-57: 2048 bits).
+MIN_RSA_KEY_BITS = 2048
+
 
 class LocalQuoteSigner:
     """Quote signer holding its private key in memory.
@@ -36,8 +39,8 @@ class LocalQuoteSigner:
     :param public_jwk: Public key as a JWK. ``alg`` selects the signing algorithm
         (default ``ES256``) and ``kid`` becomes the JWS ``kid`` header.
     :param service_url: Service URL used as the ``iss`` claim.
-    :raises SigningError: if ``service_url`` is empty or ``public_jwk`` contains
-        private key material.
+    :raises SigningError: if ``service_url`` is empty, ``public_jwk`` contains
+        private key material, or an RSA key is shorter than 2048 bits.
     """
 
     def __init__(
@@ -56,6 +59,10 @@ class LocalQuoteSigner:
             raise SigningError(
                 f"public_jwk contains private key members: {sorted(leaked)}. "
                 "Pass only the public key."
+            )
+        if isinstance(private_key, RSAPrivateKey) and private_key.key_size < MIN_RSA_KEY_BITS:
+            raise SigningError(
+                f"RSA keys must be at least {MIN_RSA_KEY_BITS} bits, got {private_key.key_size}"
             )
         self._private_key = private_key
         self._public_jwk = public_jwk
@@ -80,8 +87,8 @@ class LocalQuoteSigner:
         :param kid: Key ID published in the JWKS and sent as the JWS ``kid``.
         :param service_url: Service URL used as the ``iss`` claim.
         :param password: Password for an encrypted PEM.
-        :raises SigningError: if the key cannot be loaded or is not EC or RSA, or
-            ``kid`` is empty.
+        :raises SigningError: if the key cannot be loaded, is not EC (P-256,
+            P-384, P-521) or RSA of at least 2048 bits, or ``kid`` is empty.
         """
         if not kid or not kid.strip():
             raise SigningError("kid is required and must be non-empty.")

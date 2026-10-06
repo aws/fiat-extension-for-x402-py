@@ -163,7 +163,8 @@ from pathlib import Path
 
 from fiat_extension_x402 import JwksSellerKeyResolver, LocalQuoteSigner, jwks_document
 
-# 1. Load the key. The algorithm follows the key: P-256/P-384/P-521 or RSA.
+# 1. Load the key. The algorithm follows the key: P-256/P-384/P-521, or RSA
+#    of at least 2048 bits.
 signer = LocalQuoteSigner.from_pem(
     Path("quote-key.pem").read_bytes(),
     kid="quote-key-2026-10",
@@ -195,8 +196,10 @@ old.public_jwk)`), switch the signer to the new key, and remove the old key once
 its quotes have expired. Facilitators cache the JWKS for up to an hour, so
 publish a new key at least an hour before signing with it.
 
-`jwks_document` rejects keys without `kty` or `kid`, repeated `kid`s and private
-key material. Never publish the PEM.
+`jwks_document` accepts only keys verifiers will use: EC on P-256, P-384 or
+P-521, or RSA of at least 2048 bits, each with a unique `kid` and an `alg` that
+matches the key. It parses the key material and rejects anything malformed or
+containing private key fields. Never publish the PEM.
 
 See [examples/jwks_seller.py](examples/jwks_seller.py).
 

@@ -135,3 +135,16 @@ class TestFromPem:
         pem = _pem(ed25519.Ed25519PrivateKey.generate())
         with pytest.raises(SigningError, match="Only EC and RSA"):
             LocalQuoteSigner.from_pem(pem, kid="k1", service_url=SELLER_URL)
+
+
+class TestRsaKeySize:
+    def test_rejects_short_rsa_key(self) -> None:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=1024)
+        public_jwk = jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key(), as_dict=True)
+        with pytest.raises(SigningError, match="at least 2048 bits, got 1024"):
+            LocalQuoteSigner(key, {**public_jwk, "alg": "RS256", "kid": "r"}, SELLER_URL)
+
+    def test_from_pem_rejects_short_rsa_key(self) -> None:
+        pem = _pem(rsa.generate_private_key(public_exponent=65537, key_size=1024))
+        with pytest.raises(SigningError, match="at least 2048 bits, got 1024"):
+            LocalQuoteSigner.from_pem(pem, kid="r", service_url=SELLER_URL)

@@ -23,4 +23,5 @@ First public release.
 - Seller key resolvers: `KmsSellerKeyResolver`, `JwksSellerKeyResolver` and
   `StaticSellerKeyResolver`. The seller's key is always configured, never
   discovered from the quote token.
-- `jwks_document` builds the JWKS a seller serves at `/.well-known/jwks.json`.
+- `jwks_document` builds and validates the JWKS a seller serves at
+  `/.well-known/jwks.json`. RSA quote keys must be at least 2048 bits.
