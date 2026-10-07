@@ -2,7 +2,8 @@ name: Release
 
 # Publishing a GitHub release uploads that tag to PyPI with PyPI Trusted
 # Publishing, so there are no stored credentials. The PyPI publisher trusts this
-# file name and the `pypi` environment; renaming either breaks publishing.
+# file name and the `pypi` environment; renaming either breaks publishing. See
+# "Releasing" in CONTRIBUTING.md.
 
 on:
   release:
@@ -20,8 +21,17 @@ env:
   UV_VERSION: "0.12.23"
 
 jobs:
+  # Re-run CI on the tagged commit. A squash merge can differ from what the
+  # pull request's checks tested.
+  ci:
+    name: CI
+    uses: $/.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
     name: Build distributions
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,18 +43,45 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.12"
-      - name: Check the release tag
+      - name: Check the release
         env:
           TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
           git merge-base --is-ancestor HEAD origin/main \
             || { echo "::error::$TAG is not on main"; exit 1; }
-          version="$(uv run --no-project python -c \
-            'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          [ "$TAG" = "v$version" ] \
-            || { echo "::error::Tag $TAG does not match pyproject.toml version $version"; exit 1; }
-          grep -qx "__version__ = \"$version\"" src/fiat_extension_x402/__init__.py \
-            || { echo "::error::__version__ does not match pyproject.toml version $version"; exit 1; }
+          uv run --no-project --python 3.12 --with packaging==26.3 python - <<'PY'
+          import os
+          import sys
+          import tomllib
+
+          from packaging.version import Version
+
+          tag = os.environ["TAG"]
+          marked_prerelease = os.environ["PRERELEASE"] == "true"
+          with open("pyproject.toml", "rb") as f:
+              version = tomllib.load(f)["project"]["version"]
+          with open("src/fiat_extension_x402/__init__.py") as f:
+              init_lines = f.read().splitlines()
+
+          errors = []
+          if str(Version(version)) != version:
+              errors.append(f"{version} is not a normalized PEP 440 version")
+          if tag != f"v{version}":
+              errors.append(f"Tag {tag} does not match pyproject.toml version {version}")
+          if f'__version__ = "{version}"' not in init_lines:
+              errors.append(f"__version__ does not match pyproject.toml version {version}")
+          # PyPI accepts each version once, so a final version published by
+          # mistake from a pre-release cannot be taken back.
+          if Version(version).is_prerelease != marked_prerelease:
+              if marked_prerelease:
+                  errors.append(f"Release is marked pre-release but {version} is a final version")
+              else:
+                  errors.append(f"{version} is a pre-release; mark the GitHub release as pre-release")
+          for error in errors:
+              print(f"::error::{error}")
+          sys.exit(1 if errors else 0)
+          PY
       - run: uv build
       - name: Check the distributions
         run: uvx twine@7.0.0 check --strict dist/*
