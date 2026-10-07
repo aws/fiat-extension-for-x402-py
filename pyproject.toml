@@ -1,12 +1,13 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "fiat-extension-for-x402"
 version = "1.0.0"
 description = "AWS Marketplace Agentic Commerce payment schemes for the x402 protocol"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Amazon Web Services" }]
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +15,6 @@ keywords = ["x402", "payments", "aws", "aws-marketplace", "agentic-commerce"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
