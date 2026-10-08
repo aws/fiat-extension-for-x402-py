@@ -44,6 +44,31 @@ Looking at the existing issues is a great way to find something to contribute on
 GitHub issue labels (enhancement/bug/duplicate/help wanted/invalid/question/wontfix), looking at any 'help wanted' issues is a
 great place to start.
 
+## Releasing (maintainers)
+
+Releases are published to [PyPI](https://pypi.org/project/fiat-extension-for-x402/) by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) using PyPI Trusted Publishing, so no PyPI
+credentials are stored in the repository.
+
+1. Open a pull request that sets the new version in both `pyproject.toml` (`version`) and
+   `src/fiat_extension_x402/__init__.py` (`__version__`), and adds a `CHANGELOG.md` entry. Use a
+   [PEP 440](https://peps.python.org/pep-0440/) version: `1.1.0` for a final release, `1.1.0rc1`, `1.1.0b1` or
+   `1.1.0a1` for a pre-release.
+2. After it merges, create a GitHub release from `main` with the tag `v<version>` (for example `v1.1.0` or
+   `v1.1.0rc1`). Tick **Set as a pre-release** if, and only if, the version is a pre-release.
+3. Publishing the release starts the workflow. It re-runs CI on the tag, checks that the tag is on `main`, that it
+   matches both version strings and that the pre-release setting matches the version, then builds and checks the
+   distributions.
+4. The upload to PyPI waits for approval in the `pypi` environment from a member of the maintainers team other than
+   the person who published the release.
+
+PyPI accepts each version only once. If a release is broken, [yank it](https://docs.pypi.org/project-management/yanking/)
+on PyPI and publish a new version.
+
+The PyPI trusted publisher for `fiat-extension-for-x402` is set to repository `aws/fiat-extension-for-x402-py`,
+workflow `release.yml` and environment `pypi`. Renaming the workflow file or the environment breaks publishing until
+the publisher on PyPI is updated to match.
+
 ## Code of Conduct
 
 This project has adopted the [Amazon Open Source Code of Conduct](https://aws.github.io/code-of-conduct).
