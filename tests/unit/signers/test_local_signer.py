@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 
@@ -14,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 
 from fiat_extension_x402.exceptions import SigningError
 from fiat_extension_x402.signers import LocalQuoteSigner, QuoteSigner
+from fiat_extension_x402.signers.local import _is_rsa_pss_key
 from tests.support import SELLER_URL, ec_key
 
 
@@ -148,3 +150,80 @@ class TestRsaKeySize:
         pem = _pem(rsa.generate_private_key(public_exponent=65537, key_size=1024))
         with pytest.raises(SigningError, match="at least 2048 bits, got 1024"):
             LocalQuoteSigner.from_pem(pem, kid="r", service_url=SELLER_URL)
+
+
+# AlgorithmIdentifier DER of rsaEncryption (with NULL parameters) and of
+# id-RSASSA-PSS (parameters absent, RFC 4055), as `openssl genpkey -algorithm RSA-PSS` writes.
+_RSA_ENCRYPTION_ALG = bytes.fromhex("300d06092a864886f70d0101010500")
+_RSA_PSS_ALG = bytes.fromhex("300b06092a864886f70d01010a")
+
+
+def _pss_pem(key: rsa.RSAPrivateKey) -> bytes:
+    """An unencrypted PKCS #8 PEM of ``key`` marked RSA-PSS only."""
+    der = key.private_bytes(
+        serialization.Encoding.DER,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    assert der[:2] == b"\x30\x82" and _RSA_ENCRYPTION_ALG in der[:30]
+    body = der[4:].replace(_RSA_ENCRYPTION_ALG, _RSA_PSS_ALG, 1)
+    der = b"\x30\x82" + len(body).to_bytes(2, "big") + body
+    return _pem_block(der)
+
+
+def _pem_block(der: bytes, label: bytes = b"PRIVATE KEY") -> bytes:
+    """Wrap DER in PEM armor (RFC 7468), 64 base64 characters per line."""
+    b64 = base64.b64encode(der)
+    lines = b"".join(b64[i : i + 64] + b"\n" for i in range(0, len(b64), 64))
+    return b"-----BEGIN " + label + b"-----\n" + lines + b"-----END " + label + b"-----\n"
+
+
+class TestRsaPssKeys:
+    """Quote tokens are RS256 (PKCS #1 v1.5), which an RSA-PSS-only key does not allow."""
+
+    def test_from_pem_rejects_rsa_pss_key(self) -> None:
+        pem = _pss_pem(rsa.generate_private_key(public_exponent=65537, key_size=2048))
+        with pytest.raises(SigningError, match="Only EC and RSA private keys are supported"):
+            LocalQuoteSigner.from_pem(pem, kid="r", service_url=SELLER_URL)
+
+    def test_from_pem_rejects_rsa_pss_key_given_as_str(self) -> None:
+        pem = _pss_pem(rsa.generate_private_key(public_exponent=65537, key_size=2048))
+        with pytest.raises(SigningError, match="Only EC and RSA private keys are supported"):
+            LocalQuoteSigner.from_pem(pem.decode(), kid="r", service_url=SELLER_URL)
+
+    def test_detects_rsa_pss_key(self) -> None:
+        assert _is_rsa_pss_key(_pss_pem(rsa.generate_private_key(65537, 2048)))
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            rsa.generate_private_key(public_exponent=65537, key_size=2048),
+            ec.generate_private_key(ec.SECP384R1()),
+        ],
+    )
+    def test_plain_pkcs8_keys_are_not_rsa_pss(self, key: Any) -> None:
+        assert not _is_rsa_pss_key(_pem(key))
+
+    def test_traditional_rsa_pem_is_not_rsa_pss(self) -> None:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+        assert not _is_rsa_pss_key(pem)
+
+    @pytest.mark.parametrize(
+        "pem",
+        [
+            _pem_block(b"").replace(b"-----\n-----", b"-----\n!!not base64!!\n-----"),
+            _pem_block(b""),  # ends early
+            _pem_block(b"\x31\x00"),  # not a SEQUENCE
+            _pem_block(b"\x30\x80"),  # indefinite length
+            _pem_block(b"\x30\x85\x00\x00\x00\x00\x01"),  # length of more than 4 bytes
+        ],
+    )
+    def test_malformed_pkcs8_is_left_to_the_loader(self, pem: bytes) -> None:
+        assert not _is_rsa_pss_key(pem)
+        with pytest.raises(SigningError, match="Could not load the PEM private key"):
+            LocalQuoteSigner.from_pem(pem, kid="k1", service_url=SELLER_URL)

@@ -186,6 +186,12 @@ verifier = AgenticCommerceVerifier(
 )
 ```
 
+Use an EC key (P-256, P-384 or P-521) or a plain RSA key of at least 2048 bits.
+RSA keys marked for RSA-PSS only (`openssl genpkey -algorithm RSA-PSS`) are not
+supported: quote tokens are signed with RS256, which such a key does not allow.
+`from_pem` rejects them when the PEM is unencrypted; an encrypted RSA-PSS PEM
+cannot be told apart from a plain RSA key, so do not use one.
+
 Create a P-384 key with OpenSSL:
 
 ```bash

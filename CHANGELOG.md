@@ -25,3 +25,4 @@ First public release.
   discovered from the quote token.
 - `jwks_document` builds and validates the JWKS a seller serves at
   `/.well-known/jwks.json`. RSA quote keys must be at least 2048 bits.
+  `LocalQuoteSigner.from_pem` rejects RSA keys marked for RSA-PSS only.

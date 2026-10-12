@@ -12,7 +12,9 @@ prefer the private key never to leave AWS use
 
 from __future__ import annotations
 
+import base64
 import json
+import re
 from typing import Any
 
 import jwt as pyjwt
@@ -30,6 +32,52 @@ _EC_ALGORITHMS = {"secp256r1": "ES256", "secp384r1": "ES384", "secp521r1": "ES51
 
 # Smallest RSA modulus accepted for quote signing (NIST SP 800-57: 2048 bits).
 MIN_RSA_KEY_BITS = 2048
+
+# An unencrypted PKCS #8 PEM block, the only PEM form whose key algorithm is readable.
+_PKCS8_PEM = re.compile(rb"-----BEGIN PRIVATE KEY-----(.*?)-----END PRIVATE KEY-----", re.DOTALL)
+
+# id-RSASSA-PSS (1.2.840.113549.1.1.10), the DER contents of the OID.
+_RSA_PSS_OID = bytes.fromhex("2a864886f70d01010a")
+
+
+def _der_header(der: bytes, offset: int, tag: int) -> tuple[int, int]:
+    """Return the content offset and length of the DER element at ``offset``.
+
+    :raises ValueError: if the element does not have ``tag`` or a supported length.
+    :raises IndexError: if ``der`` ends early.
+    """
+    if der[offset] != tag:
+        raise ValueError("unexpected DER tag")
+    first = der[offset + 1]
+    if first < 0x80:
+        return offset + 2, first
+    count = first & 0x7F
+    if not 1 <= count <= 4:
+        raise ValueError("unsupported DER length")
+    start = offset + 2 + count
+    return start, int.from_bytes(der[offset + 2 : start], "big")
+
+
+def _is_rsa_pss_key(pem: bytes) -> bool:
+    """Whether ``pem`` is an unencrypted PKCS #8 key marked RSA-PSS only.
+
+    ``cryptography`` loads such a key as an ordinary RSA key and drops the
+    marking, so it is read from the PEM before loading: the algorithm OID of the
+    PrivateKeyInfo (RFC 5208). Anything that does not parse is left to the PEM
+    loader to report.
+    """
+    match = _PKCS8_PEM.search(pem)
+    if match is None:
+        return False
+    try:
+        der = base64.b64decode(b"".join(match.group(1).split()), validate=True)
+        info, _ = _der_header(der, 0, 0x30)  # PrivateKeyInfo
+        version, length = _der_header(der, info, 0x02)
+        algorithm, _ = _der_header(der, version + length, 0x30)  # AlgorithmIdentifier
+        oid, length = _der_header(der, algorithm, 0x06)
+    except (ValueError, IndexError):  # binascii.Error is a ValueError
+        return False
+    return der[oid : oid + length] == _RSA_PSS_OID
 
 
 class LocalQuoteSigner:
@@ -83,16 +131,25 @@ class LocalQuoteSigner:
         The public JWK is derived from the key. The algorithm follows the key:
         ``ES256``/``ES384``/``ES512`` for P-256/P-384/P-521 and ``RS256`` for RSA.
 
+        RSA keys marked for RSA-PSS only (for example from ``openssl genpkey
+        -algorithm RSA-PSS``) are rejected, because quote tokens are signed with
+        RS256 (PKCS #1 v1.5), which such a key does not allow. The marking can
+        only be read from an unencrypted PEM; an encrypted RSA-PSS PEM loads as a
+        plain RSA key.
+
         :param pem: The PEM-encoded private key.
         :param kid: Key ID published in the JWKS and sent as the JWS ``kid``.
         :param service_url: Service URL used as the ``iss`` claim.
         :param password: Password for an encrypted PEM.
         :raises SigningError: if the key cannot be loaded, is not EC (P-256,
-            P-384, P-521) or RSA of at least 2048 bits, or ``kid`` is empty.
+            P-384, P-521) or RSA of at least 2048 bits, is marked RSA-PSS only,
+            or ``kid`` is empty.
         """
         if not kid or not kid.strip():
             raise SigningError("kid is required and must be non-empty.")
         data = pem.encode() if isinstance(pem, str) else pem
+        if _is_rsa_pss_key(data):
+            raise SigningError("Only EC and RSA private keys are supported.")
         try:
             private_key = load_pem_private_key(data, password=password)
         except (TypeError, ValueError) as exc:
