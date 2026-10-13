@@ -39,7 +39,7 @@ ASSET_TRANSFER_METHOD = "payment-token"
 DYNAMIC_EXTRA_FIELDS = ["quoteToken"]
 
 # Default base URL of the service's payment-token signing keys (JWKS).
-DEFAULT_PAYMENT_TOKEN_JWKS_BASE_URL = "https://d3aeb2cjjowogc.cloudfront.net"
+DEFAULT_PAYMENT_TOKEN_JWKS_BASE_URL = "https://agenticcommerce-marketplace.us-east-1.api.aws"
 
 # Path to the JWKS document under a base URL.
 WELL_KNOWN_JWKS_PATH = "/.well-known/jwks.json"
