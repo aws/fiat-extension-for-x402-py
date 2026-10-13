@@ -36,7 +36,11 @@ class DPoPNonceStore(Protocol):
         ...  # pragma: no cover
 
     def add(self, jti: str, expires_at: int) -> None:
-        """Record a proof id as used, with an expiry timestamp (seconds)."""
+        """Record a proof id as used until ``expires_at`` (Unix time, seconds).
+
+        ``has`` must return ``True`` for the id while the time is before
+        ``expires_at``; the store may forget the id from then on.
+        """
         ...  # pragma: no cover
 
 

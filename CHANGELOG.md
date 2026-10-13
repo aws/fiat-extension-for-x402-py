@@ -26,3 +26,9 @@ First public release.
 - `jwks_document` builds and validates the JWKS a seller serves at
   `/.well-known/jwks.json`. RSA quote keys must be at least 2048 bits.
   `LocalQuoteSigner.from_pem` rejects RSA keys marked for RSA-PSS only.
+- DPoP replay protection keeps a proof id in the `DPoPNonceStore` until the
+  second after the proof stops being accepted (`iat` + maximum age + 5 seconds
+  of clock skew + 1), so a store that evicts at that time never forgets a proof
+  that would still be accepted.
+- An error for a JWK that cannot be imported names the key by its `kid` and
+  never includes the key's members.
