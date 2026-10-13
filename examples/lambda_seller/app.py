@@ -7,13 +7,10 @@ Lambda environment:
 * ``SELLER_KMS_KEY_ARN``: KMS key (ECC_NIST_P384, SIGN_VERIFY) that signs quotes.
 * ``SELLER_SERVICE_URL``: the seller's public URL; the quote token's ``iss``.
 * ``SELLER_PRODUCT_ID``: the seller's AWS Marketplace product ID.
-* ``PAYMENT_TOKEN_JWKS_HEADERS`` (optional): JSON object of headers sent when
-  fetching the payment service's JWKS (an access header issued at onboarding).
 """
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
 from urllib.parse import quote
@@ -37,14 +34,12 @@ KMS_KEY_ARN = os.environ["SELLER_KMS_KEY_ARN"]
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SERVICE_URL = os.environ["SELLER_SERVICE_URL"]
 PRODUCT_ID = os.environ["SELLER_PRODUCT_ID"]
-JWKS_HEADERS = json.loads(os.environ.get("PAYMENT_TOKEN_JWKS_HEADERS") or "{}")
 
 signer = KmsQuoteSigner(
     KmsQuoteSignerConfig(key_arn=KMS_KEY_ARN, region=REGION, service_url=SERVICE_URL)
 )
 verifier = AgenticCommerceVerifier(
     seller_key_resolver=KmsSellerKeyResolver(KMS_KEY_ARN, REGION),
-    jwks_request_headers=JWKS_HEADERS,
 )
 facilitator = register_exact_agentic_commerce_facilitator(x402Facilitator(), verifier=verifier)
 server = register_exact_agentic_commerce_server(x402ResourceServer(facilitator), signer=signer)

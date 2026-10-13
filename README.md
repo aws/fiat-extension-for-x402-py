@@ -273,8 +273,8 @@ always configured, never discovered from the token:
 `AgenticCommerceVerifier` accepts:
 
 - `payment_token_jwks_url`: base URL of the service's signing keys (defaults to production).
-- `jwks_request_headers`: extra headers for that request, for example an access
-  header issued during onboarding.
+- `jwks_request_headers`: extra headers for that request. The production JWKS
+  needs none.
 
 ### DPoP
 
