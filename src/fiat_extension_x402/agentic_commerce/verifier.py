@@ -83,7 +83,7 @@ class AgenticCommerceVerifier:
     :param payment_token_jwks_url: Base URL of the service's JWKS. Defaults to
         the production endpoint.
     :param jwks_request_headers: Extra headers sent when fetching the service's
-        JWKS. The production JWKS needs none.
+        JWKS.
     :param payment_token_issuer: Expected ``iss`` of payment tokens.
     """
 
