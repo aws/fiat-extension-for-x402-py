@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from base64 import urlsafe_b64encode
 from typing import Any
@@ -27,6 +28,16 @@ _ALLOWED_DPOP_ALGORITHMS = frozenset({"ES256", "ES384", "ES512", "RS256", "PS256
 def _base64url_encode_no_pad(data: bytes) -> str:
     """Base64url-encode without padding."""
     return urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _replay_expires_at(iat: int, max_age: float) -> int:
+    """Return the time from which a nonce store may forget a proof issued at ``iat``.
+
+    The proof is accepted until ``now - iat`` exceeds ``max_age`` + clock skew,
+    with ``now`` in whole seconds, so it must stay recorded until the second after
+    that.
+    """
+    return iat + math.floor(max_age + _CLOCK_SKEW) + 1
 
 
 def verify_dpop_proof(proof: str, options: dict[str, Any]) -> dict[str, Any]:
@@ -131,11 +142,7 @@ def verify_dpop_proof(proof: str, options: dict[str, Any]) -> dict[str, Any]:
         jti = claims["jti"]
         if nonce_store.has(jti):
             raise DPoPError("DPoP proof replay detected", {"jti": jti})
-        # The proof is accepted until ``now - iat`` exceeds max_age + clock skew,
-        # with ``now`` in whole seconds, so it must stay recorded until the second
-        # after that: the store may forget it once the time reaches ``expires_at``.
-        expires_at = iat + max_age + _CLOCK_SKEW + 1
-        nonce_store.add(jti, expires_at)
+        nonce_store.add(jti, _replay_expires_at(iat, max_age))
 
     return claims
 

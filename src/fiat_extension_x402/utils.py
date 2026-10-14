@@ -88,9 +88,10 @@ def verify_payment_token(token: str, public_key: Any) -> dict[str, Any]:
     return claims
 
 
-# Matches "$1.50", "1.50 USD", "1.50" — a non-negative decimal with an optional
-# leading "$" and an optional trailing 3-letter currency code (defaults to USD).
-_MONEY_PATTERN = re.compile(r"^\$?(\d+\.?\d*)\s*([A-Z]{3})?$")
+# Matches "$1.50", "1.50 USD", "1.50" — a non-negative decimal in ASCII digits with
+# an optional leading "$" and an optional trailing 3-letter currency code (defaults
+# to USD).
+_MONEY_PATTERN = re.compile(r"^\$?([0-9]+\.?[0-9]*)\s*([A-Z]{3})?$")
 
 
 def parse_money_to_decimal(money: str | float) -> dict[str, Any]:
@@ -102,6 +103,8 @@ def parse_money_to_decimal(money: str | float) -> dict[str, Any]:
     :returns: Dict with ``amount`` (float) and ``currency`` (str).
     :raises ValidationError: if a string value does not match the expected format.
     """
+    if isinstance(money, bool):
+        raise ValidationError(f"Invalid money format: {money}")
     if isinstance(money, (int, float)):
         return {"amount": float(money), "currency": "USD"}
 

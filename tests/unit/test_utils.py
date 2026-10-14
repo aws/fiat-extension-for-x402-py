@@ -172,6 +172,16 @@ class TestParseMoneyEdgeCases:
             with pytest.raises(ValidationError):
                 parse_money_to_decimal(bad)
 
+    @pytest.mark.parametrize("money", [True, False])
+    def test_booleans_raise(self, money: bool) -> None:
+        with pytest.raises(ValidationError, match="Invalid money format"):
+            parse_money_to_decimal(money)
+
+    @pytest.mark.parametrize("money", ["\u0661.\u0665\u0660", "$1.\u0665", "\uff11 USD"])
+    def test_non_ascii_digits_raise(self, money: str) -> None:
+        with pytest.raises(ValidationError, match="Invalid money format"):
+            parse_money_to_decimal(money)
+
 
 class TestDecodeQuoteTokenMessage:
     """The decode error message matches the reference wording."""

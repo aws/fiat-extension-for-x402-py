@@ -283,7 +283,9 @@ always configured, never discovered from the token:
 When a payment token is bound to a key (`cnf.jkt`), the request must carry a
 `DPoP` header (RFC 9449) proving possession of that key for this method, URL and
 payment token. The server scheme checks this before verification. To reject
-replayed proofs, pass a `DPoPNonceStore` shared by all instances of the seller:
+replayed proofs, pass a `DPoPNonceStore` shared by all instances of the seller.
+A proof's `jti` is checked and recorded only after the facilitator has accepted
+the payment token, so a forged token adds nothing to the store:
 
 ```python
 register_exact_agentic_commerce_server(server, signer=signer, dpop_nonce_store=store)
@@ -291,7 +293,25 @@ register_exact_agentic_commerce_server(server, signer=signer, dpop_nonce_store=s
 
 `dpop_max_age_seconds` (default 60) limits how old a proof may be. The store's
 `add(jti, expires_at)` gives the Unix time (seconds) from which it may forget a
-proof id; until then `has(jti)` must return `True`.
+proof id; until then `has(jti)` must return `True`. For each request `has` is
+called at most once, and `add` only after `has` returned `False`, so a store
+whose `has` records the id (an atomic check-and-set, for a store shared between
+processes) also works. Such a store must give the id its own expiry in `has`
+(for example 70 seconds), because `add` is not called when the payment is
+refused after `has`.
+
+Because the check runs after verification, a replayed proof reaches the
+facilitator and is then refused with `dpop_invalid`: your own `on_after_verify`
+hooks run for it, so do not treat that call alone as an accepted payment, and
+`on_verified_payment_canceled` is called with the reason `after_verify_aborted`.
+The handler does not run and nothing is settled. The payment that hook names may
+be one an earlier request already completed (the replayed one), so do not void
+or refund on `after_verify_aborted` alone. A store error refuses the payment in
+the same way, and is logged as a warning.
+
+With a nonce store, a transport context you pass to `verify_payment` yourself
+must support weak references, as x402's `HTTPTransportContext` does; otherwise
+DPoP-bound payments are refused with `dpop_invalid`.
 
 ## Failure reasons
 

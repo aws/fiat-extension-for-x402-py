@@ -42,4 +42,20 @@ First public release.
   `iso4217:` prefix.
 - String prices accept ASCII digits only: digits from other scripts, such as
   Arabic-Indic digits, are a `ValidationError`. The number `-0.0` is priced as
-  `0.0`.
+  `0.0`. `parse_money_to_decimal` also accepts ASCII digits only, and rejects
+  booleans.
+- A dict route price whose `extra` is not a dict, and a boolean route price, are
+  an `Invalid price: ...` `ValidationError`. The message shows only the amount
+  and asset, never `extra`.
+- The server scheme checks and records a DPoP proof's `jti` in the
+  `DPoPNonceStore` only after the facilitator has accepted the payment token, in
+  a new `after_verify` scheme hook. A forged token bound to the caller's own key
+  adds nothing to the store. A replayed proof is refused with `dpop_invalid`
+  after the facilitator call: the seller's `on_after_verify` hooks run, and
+  `on_verified_payment_canceled` is called with `after_verify_aborted`, for a
+  payment an earlier request may already have completed, so that reason alone
+  must not void or refund it. Nothing is settled. A store error (logged as a
+  warning), or a proof that goes stale during the facilitator call or the store
+  lookup, is refused the same way. With a nonce store, a transport context
+  passed to `verify_payment` by the caller must support weak references; x402's
+  `HTTPTransportContext` does.

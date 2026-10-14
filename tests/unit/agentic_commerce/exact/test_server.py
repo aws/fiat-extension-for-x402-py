@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import gc
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -17,8 +18,9 @@ from x402.schemas import (
     PaymentPayload,
     PaymentRequirements,
     ResourceConfig,
+    VerifyResponse,
 )
-from x402.schemas.hooks import VerifyContext
+from x402.schemas.hooks import VerifyContext, VerifyResultContext
 
 from fiat_extension_x402 import (
     AgenticCommerceVerifier,
@@ -74,6 +76,44 @@ class _InMemoryNonceStore:
         self.seen.add(jti)
 
 
+class _RecordingNonceStore:
+    """Replay store that logs every call."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+        self.added: dict[str, int] = {}
+
+    def has(self, jti: str) -> bool:
+        self.calls.append(("has", jti))
+        return jti in self.added
+
+    def add(self, jti: str, expires_at: int) -> None:
+        self.calls.append(("add", jti))
+        self.added[jti] = expires_at
+
+
+class _CheckAndSetNonceStore(_RecordingNonceStore):
+    """Replay store whose ``has`` records the id: an atomic check-and-set."""
+
+    def has(self, jti: str) -> bool:
+        seen = super().has(jti)
+        self.added.setdefault(jti, 0)
+        return seen
+
+
+class _FailingNonceStore:
+    def __init__(self, failing: str) -> None:
+        self.failing = failing
+
+    def has(self, jti: str) -> bool:
+        if self.failing == "has":
+            raise RuntimeError(f"store unavailable for {jti}")
+        return False
+
+    def add(self, jti: str, expires_at: int) -> None:
+        raise RuntimeError(f"store unavailable for {jti}")
+
+
 class _EvictingNonceStore:
     """Replay store that forgets a proof id as soon as ``time.time()`` reaches its expiry."""
 
@@ -104,6 +144,13 @@ def _base_requirements() -> PaymentRequirements:
     )
 
 
+class _Transport:
+    """A transport context, built for each request as x402 core does."""
+
+    def __init__(self, adapter: _FakeAdapter | None) -> None:
+        self.request = SimpleNamespace(adapter=adapter)
+
+
 def _context(
     payment_payload: dict[str, Any],
     adapter: _FakeAdapter | None = None,
@@ -111,7 +158,7 @@ def _context(
 ) -> VerifyContext:
     requirements = _base_requirements()
     if transport_context == "unset":
-        transport_context = SimpleNamespace(request=SimpleNamespace(adapter=adapter))
+        transport_context = _Transport(adapter)
     return VerifyContext(
         payment_payload=PaymentPayload(payload=payment_payload, accepted=requirements),
         requirements=requirements,
@@ -136,6 +183,26 @@ class _Buyer:
         return _context({"paymentToken": self.token}, _FakeAdapter(method, url, headers))
 
 
+def _verified(context: VerifyContext, *, is_valid: bool = True) -> VerifyResultContext:
+    """The context x402 core passes to ``after_verify`` once the facilitator answers."""
+    return VerifyResultContext(
+        payment_payload=context.payment_payload,
+        requirements=context.requirements,
+        transport_context=context.transport_context,
+        result=VerifyResponse(is_valid=is_valid, invalid_reason=None if is_valid else "invalid"),
+    )
+
+
+def _pay(
+    scheme: ExactAgenticCommerceServerScheme, context: VerifyContext, *, is_valid: bool = True
+) -> AbortResult | None:
+    """Run both hooks as x402 core does: ``after_verify`` only if ``before_verify`` passes."""
+    result = scheme.before_verify(context)
+    if result is not None:
+        return result
+    return scheme.after_verify(_verified(context, is_valid=is_valid))
+
+
 class TestClassAttributes:
     def test_attributes(self) -> None:
         scheme = ExactAgenticCommerceServerScheme
@@ -146,6 +213,14 @@ class TestClassAttributes:
             ASSET_TRANSFER_METHOD: {"supported": ("authorization",), "default": "authorization"}
         }
         assert scheme.dynamic_extra_fields == ["quoteToken"]
+
+    def test_x402_core_finds_both_hooks(self) -> None:
+        from x402.hook_adapters import collect_scheme_server_hook_handles
+
+        scheme: Any = _scheme()  # Not typed as x402's SchemeNetworkServer protocol.
+        handles = collect_scheme_server_hook_handles(scheme)
+        assert handles.before_verify == scheme.before_verify
+        assert handles.after_verify == scheme.after_verify
 
     def test_signer_property(self) -> None:
         signer = seller_signer()
@@ -200,6 +275,12 @@ class TestParsePrice:
     def test_invalid_string_raises(self, price: str) -> None:
         with pytest.raises(ValidationError, match="Invalid price"):
             _scheme().parse_price(price, "aws:base")
+
+    @pytest.mark.parametrize("price", [True, False])
+    def test_boolean_raises(self, price: bool) -> None:
+        with pytest.raises(ValidationError) as raised:
+            _scheme().parse_price(price, "aws:base")
+        assert str(raised.value) == f"Invalid price: {price!r}"
 
     @pytest.mark.parametrize("price", [-1.5, -1])
     def test_negative_number_raises(self, price: float) -> None:
@@ -361,6 +442,20 @@ class TestParseObjectPrice:
             _scheme().parse_price(price if as_dict else AssetAmount(**price), "aws:base")
         assert str(raised.value) == "Invalid price: {'amount': '1.50', 'asset': 'usd'}"
 
+    @pytest.mark.parametrize("extra", ["s3cr3t", ["s3cr3t"], 7])
+    def test_dict_extra_not_a_dict_raises_without_showing_it(self, extra: Any) -> None:
+        price = {"amount": "1.50", "asset": "iso4217:USD", "extra": extra}
+        with pytest.raises(ValidationError) as raised:
+            _scheme().parse_price(price, "aws:base")  # type: ignore[arg-type]
+        assert str(raised.value) == f"Invalid price: {_shown('1.50', 'iso4217:USD')}"
+        assert raised.value.__cause__ is None
+        assert raised.value.__suppress_context__
+
+    def test_dict_extra_none_accepted(self) -> None:
+        price = {"amount": "1.50", "asset": "iso4217:USD", "extra": None}
+        parsed = _scheme().parse_price(price, "aws:base")  # type: ignore[arg-type]
+        assert parsed == AssetAmount(amount="1.50", asset="iso4217:USD", extra=None)
+
     def test_unrepresentable_field_is_not_shown(self) -> None:
         price = {"amount": _Unrepresentable(), "asset": "iso4217:USD"}
         with pytest.raises(ValidationError) as raised:
@@ -521,10 +616,8 @@ class TestBeforeVerifyDpopProof:
         buyer = _Buyer()
         scheme = _scheme(dpop_nonce_store=_InMemoryNonceStore())
         proof = buyer.proof()
-        assert scheme.before_verify(buyer.context({"DPoP": proof})) is None
-        assert scheme.before_verify(buyer.context({"DPoP": proof})) == AbortResult(
-            reason="dpop_invalid"
-        )
+        assert _pay(scheme, buyer.context({"DPoP": proof})) is None
+        assert _pay(scheme, buyer.context({"DPoP": proof})) == AbortResult(reason="dpop_invalid")
 
     @pytest.mark.parametrize("max_age", [60, 10])
     def test_replay_rejected_for_the_whole_acceptance_window(
@@ -538,25 +631,192 @@ class TestBeforeVerifyDpopProof:
         clock = {"now": float(iat)}
         monkeypatch.setattr(time, "time", lambda: clock["now"])
         proof = buyer.proof(iat=iat)
-        assert scheme.before_verify(buyer.context({"DPoP": proof})) is None
+        assert _pay(scheme, buyer.context({"DPoP": proof})) is None
 
         replayed = {}
         for second in range(iat, last_accepted + 2):
             for now in (second, second + 0.5):
                 clock["now"] = now
-                replayed[now - iat] = scheme.before_verify(buyer.context({"DPoP": proof}))
+                replayed[now - iat] = _pay(scheme, buyer.context({"DPoP": proof}))
         assert replayed == dict.fromkeys(replayed, AbortResult(reason="dpop_invalid"))
 
         clock["now"] = last_accepted + 0.5
         fresh = buyer.proof(iat=iat)
-        assert scheme.before_verify(buyer.context({"DPoP": fresh})) is None
-        assert scheme.before_verify(buyer.context({"DPoP": fresh})) == AbortResult(
-            reason="dpop_invalid"
-        )
+        assert _pay(scheme, buyer.context({"DPoP": fresh})) is None
+        assert _pay(scheme, buyer.context({"DPoP": fresh})) == AbortResult(reason="dpop_invalid")
 
     def test_replay_allowed_without_nonce_store(self) -> None:
         buyer = _Buyer()
         scheme = _scheme()
         proof = buyer.proof()
+        assert _pay(scheme, buyer.context({"DPoP": proof})) is None
+        assert _pay(scheme, buyer.context({"DPoP": proof})) is None
+
+
+class TestNonceStoreAfterVerify:
+    """A proof id is checked and recorded only once the facilitator accepts the token."""
+
+    def test_before_verify_leaves_the_store_untouched(self) -> None:
+        buyer = _Buyer()
+        store = _RecordingNonceStore()
+        scheme = _scheme(dpop_nonce_store=store)
+        proof = buyer.proof()
         assert scheme.before_verify(buyer.context({"DPoP": proof})) is None
         assert scheme.before_verify(buyer.context({"DPoP": proof})) is None
+        assert store.calls == []
+
+    def test_forged_token_adds_nothing(self) -> None:
+        """A token bound to the caller's own key, which the facilitator rejects."""
+        store = _RecordingNonceStore()
+        scheme = _scheme(dpop_nonce_store=store)
+        for _ in range(20):
+            forger = _Buyer()  # Its token is signed by a key the service never published.
+            assert _pay(scheme, forger.context({"DPoP": forger.proof()}), is_valid=False) is None
+        assert store.calls == []
+
+    def test_accepted_token_records_the_id_once_with_its_expiry(self) -> None:
+        buyer = _Buyer()
+        store = _RecordingNonceStore()
+        scheme = _scheme(dpop_nonce_store=store, dpop_max_age_seconds=10)
+        iat = int(time.time())
+        proof = buyer.proof(iat=iat)
+        assert _pay(scheme, buyer.context({"DPoP": proof})) is None
+        jti = jwt.decode(proof, options={"verify_signature": False})["jti"]
+        assert store.calls == [("has", jti), ("add", jti)]
+        assert store.added == {jti: iat + 10 + 5 + 1}
+
+        assert _pay(scheme, buyer.context({"DPoP": proof})) == AbortResult(reason="dpop_invalid")
+        assert store.calls[2:] == [("has", jti)]
+
+    def test_store_that_records_in_has(self) -> None:
+        buyer = _Buyer()
+        store = _CheckAndSetNonceStore()
+        scheme = _scheme(dpop_nonce_store=store)
+        forger = _Buyer()
+        assert _pay(scheme, forger.context({"DPoP": forger.proof()}), is_valid=False) is None
+        assert store.added == {}
+
+        proof = buyer.proof()
+        assert _pay(scheme, buyer.context({"DPoP": proof})) is None
+        assert _pay(scheme, buyer.context({"DPoP": proof})) == AbortResult(reason="dpop_invalid")
+        assert [call[0] for call in store.calls] == ["has", "add", "has"]
+
+    def test_proof_gone_stale_while_the_facilitator_ran(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buyer = _Buyer()
+        store = _RecordingNonceStore()
+        scheme = _scheme(dpop_nonce_store=store)
+        iat = 1_700_000_000
+        clock = {"now": float(iat + 65)}
+        monkeypatch.setattr(time, "time", lambda: clock["now"])
+        context = buyer.context({"DPoP": buyer.proof(iat=iat)})
+        assert scheme.before_verify(context) is None  # Still accepted at iat + 65.
+        clock["now"] = iat + 66.0
+        assert scheme.after_verify(_verified(context)) == AbortResult(reason="dpop_invalid")
+        assert store.calls == []
+
+    def test_proof_gone_stale_during_the_store_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A store that has just forgotten the proof's earlier use must not let it pass."""
+        buyer = _Buyer()
+        iat = 1_700_000_000
+        clock = {"now": float(iat + 65)}
+        monkeypatch.setattr(time, "time", lambda: clock["now"])
+
+        class _SlowEvictingStore(_EvictingNonceStore):
+            def has(self, jti: str) -> bool:
+                clock["now"] = iat + 66.0  # The lookup ends as the proof goes stale.
+                return super().has(jti)
+
+        store = _SlowEvictingStore()
+        scheme = _scheme(dpop_nonce_store=store)
+        context = buyer.context({"DPoP": buyer.proof(iat=iat)})
+        assert scheme.before_verify(context) is None
+        assert scheme.after_verify(_verified(context)) == AbortResult(reason="dpop_invalid")
+        assert store.seen == {}
+
+    def test_proof_accepted_in_its_last_second(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buyer = _Buyer()
+        scheme = _scheme(dpop_nonce_store=_RecordingNonceStore())
+        iat = 1_700_000_000
+        monkeypatch.setattr(time, "time", lambda: iat + 65.9)
+        assert _pay(scheme, buyer.context({"DPoP": buyer.proof(iat=iat)})) is None
+
+    @pytest.mark.parametrize("failing", ["has", "add"])
+    def test_store_error_refuses_the_payment(
+        self, failing: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        buyer = _Buyer()
+        scheme = _scheme(dpop_nonce_store=_FailingNonceStore(failing))
+        proof = buyer.proof()
+        result = _pay(scheme, buyer.context({"DPoP": proof}))
+        assert result == AbortResult(reason="dpop_invalid")
+        assert caplog.messages == ["DPoP nonce store failed (RuntimeError); payment refused"]
+        jti = jwt.decode(proof, options={"verify_signature": False})["jti"]
+        assert jti not in caplog.text
+
+    def test_each_request_keeps_its_own_proof(self) -> None:
+        first, second = _Buyer(), _Buyer()
+        store = _RecordingNonceStore()
+        scheme = _scheme(dpop_nonce_store=store)
+        first_proof, second_proof = first.proof(), second.proof()
+        first_context = first.context({"DPoP": first_proof})
+        second_context = second.context({"DPoP": second_proof})
+        assert scheme.before_verify(first_context) is None
+        assert scheme.before_verify(second_context) is None
+        # The second request's token is rejected; the first one's is accepted.
+        assert scheme.after_verify(_verified(second_context, is_valid=False)) is None
+        assert scheme.after_verify(_verified(first_context)) is None
+        first_jti = jwt.decode(first_proof, options={"verify_signature": False})["jti"]
+        assert list(store.added) == [first_jti]
+
+    def test_after_verify_runs_once_per_proof(self) -> None:
+        buyer = _Buyer()
+        store = _RecordingNonceStore()
+        scheme = _scheme(dpop_nonce_store=store)
+        context = buyer.context({"DPoP": buyer.proof()})
+        assert scheme.before_verify(context) is None
+        assert scheme.after_verify(_verified(context)) is None
+        assert scheme.after_verify(_verified(context)) is None
+        assert len(store.calls) == 2
+
+    def test_reused_transport_context_drops_an_earlier_proof(self) -> None:
+        buyer = _Buyer()
+        store = _RecordingNonceStore()
+        scheme = _scheme(dpop_nonce_store=store)
+        transport = _Transport(_FakeAdapter("GET", URL, {"DPoP": buyer.proof()}))
+        bound = _context({"paymentToken": buyer.token}, transport_context=transport)
+        assert scheme.before_verify(bound) is None
+        unbound = _context({"paymentToken": FakePaymentService().issue("quote")}, None, transport)
+        assert scheme.before_verify(unbound) is None
+        assert scheme.after_verify(_verified(unbound)) is None
+        assert store.calls == []
+
+    def test_unbound_token_and_no_before_verify(self) -> None:
+        store = _RecordingNonceStore()
+        scheme = _scheme(dpop_nonce_store=store)
+        context = _context({"paymentToken": FakePaymentService().issue("quote")})
+        assert _pay(scheme, context) is None
+        assert scheme.after_verify(_verified(_Buyer().context({}))) is None
+        assert store.calls == []
+
+    def test_request_that_never_reaches_after_verify_leaves_nothing(self) -> None:
+        buyer = _Buyer()
+        scheme = _scheme(dpop_nonce_store=_RecordingNonceStore())
+        for _ in range(5):
+            assert scheme.before_verify(buyer.context({"DPoP": buyer.proof()})) is None
+        gc.collect()
+        assert scheme._pending_proofs._by_id == {}
+
+    def test_transport_context_without_weak_references(self) -> None:
+        buyer = _Buyer()
+        adapter = _FakeAdapter("GET", URL, {"DPoP": buyer.proof()})
+        transport = SimpleNamespace(request=SimpleNamespace(adapter=adapter))
+        context = _context({"paymentToken": buyer.token}, transport_context=transport)
+        assert _scheme().before_verify(context) is None
+        store = _RecordingNonceStore()
+        result = _scheme(dpop_nonce_store=store).before_verify(context)
+        assert result == AbortResult(reason="dpop_invalid")
+        assert store.calls == []
