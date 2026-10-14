@@ -32,3 +32,14 @@ First public release.
   that would still be accepted.
 - An error for a JWK that cannot be imported names the key by its `kid` and
   never includes the key's members.
+- An `AssetAmount` or `{"amount", "asset"}` route price is checked as a string
+  or number price is. Its `amount` must be a plain decimal string with at most 8
+  decimal places, and its `asset` must be `iso4217:` and an upper-case
+  three-letter code. Anything else is a `ValidationError` instead of a signed
+  quote: for example the amount `0.123456789`, `1e5` or `$1.50`, or the asset
+  `USD`. `enhance_payment_requirements` applies the same rule to the
+  requirements it signs, so it also rejects a missing asset and a doubled
+  `iso4217:` prefix.
+- String prices accept ASCII digits only: digits from other scripts, such as
+  Arabic-Indic digits, are a `ValidationError`. The number `-0.0` is priced as
+  `0.0`.

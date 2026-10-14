@@ -247,7 +247,10 @@ PaymentOption(
     scheme="exact",
     network="aws:base",
     pay_to="prod-abc123",  # AWS Marketplace product ID
-    price="$0.01",  # at most 8 decimal places
+    # or "0.01 USD", 0.01 or AssetAmount(amount="0.01", asset="iso4217:USD"),
+    # whose amount is a plain decimal string and asset iso4217: and an
+    # upper-case three-letter code; at most 8 decimal places
+    price="$0.01",
     extra={
         "description": "Current weather",
         "dimensions": {"calls": 1},

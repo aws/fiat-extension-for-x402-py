@@ -91,12 +91,43 @@ class TestQuoteClaims:
         enhance_payment_requirements(_requirements(asset="iso4217:EUR", amount="2"), signer)
         assert signer.signed[0]["price"] == {"amount": "2", "currency": "EUR"}
 
-    def test_missing_asset_gives_empty_currency(self) -> None:
+    def test_amount_kept_verbatim(self) -> None:
         signer = _RecordingSigner()
-        requirements = _requirements()
-        del requirements["asset"]
-        enhance_payment_requirements(requirements, signer)
-        assert signer.signed[0]["price"]["currency"] == ""
+        enhance_payment_requirements(_requirements(amount="02.50"), signer)
+        assert signer.signed[0]["price"] == {"amount": "02.50", "currency": "USD"}
+
+    # The same rules as parse_price, for a caller that skips it.
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            (
+                {"amount": "0.123456789"},
+                (
+                    "Price may have at most 8 decimal places: "
+                    "{'amount': '0.123456789', 'asset': 'iso4217:USD'}"
+                ),
+            ),
+            ({"amount": "1e5"}, "Invalid price: {'amount': '1e5', 'asset': 'iso4217:USD'}"),
+            ({"amount": 5}, "Invalid price: {'amount': 5, 'asset': 'iso4217:USD'}"),
+            ({"asset": "USD"}, "Invalid price: {'amount': '0.10', 'asset': 'USD'}"),
+            (
+                {"asset": "iso4217:iso4217:GBP"},
+                "Invalid price: {'amount': '0.10', 'asset': 'iso4217:iso4217:GBP'}",
+            ),
+            ({"asset": None}, "Invalid price: {'amount': '0.10', 'asset': None}"),
+            ({"amount": None}, "Invalid price: {'amount': None, 'asset': 'iso4217:USD'}"),
+        ],
+    )
+    def test_malformed_price_signs_no_quote(self, overrides: dict[str, Any], message: str) -> None:
+        signer = _RecordingSigner()
+        requirements = _requirements(**overrides)
+        for name, value in overrides.items():
+            if value is None:
+                del requirements[name]
+        with pytest.raises(ValidationError) as raised:
+            enhance_payment_requirements(requirements, signer)
+        assert str(raised.value) == message
+        assert signer.signed == []
 
     def test_reference_from_extra(self) -> None:
         signer = _RecordingSigner()
