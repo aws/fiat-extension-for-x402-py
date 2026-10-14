@@ -289,6 +289,52 @@ class TestPaymentTokenSignature:
         assert route.call_count == 2
 
 
+class TestKeyImportErrors:
+    """A key that cannot be imported is named by its kid; its members never reach the message."""
+
+    def test_payment_key_without_string_kid(self, mock_router: respx.MockRouter) -> None:
+        service = FakePaymentService()
+        bad_key = {"kid": 7, "d": "private-d-value"}
+        mock_router.get(SERVICE_JWKS_URL).mock(
+            return_value=httpx.Response(200, json={"keys": [bad_key]})
+        )
+        token = _service_token(service, _payment_claims("quote"), headers={})
+        result = _static(seller_signer()).verify(token, _raw_requirements("quote"))
+        _assert_invalid(result, "invalid_payment", "")
+        assert result.invalid_message == (
+            "Payment token signature invalid: JWK: invalid key material"
+        )
+
+    def test_unimportable_key_is_skipped_for_the_next_one(
+        self, mock_router: respx.MockRouter
+    ) -> None:
+        service = FakePaymentService()
+        mock_router.get(SERVICE_JWKS_URL).mock(
+            return_value=httpx.Response(200, json={"keys": [{"d": "x"}, service.jwk]})
+        )
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        quote_token = requirements["extra"]["quoteToken"]
+        token = _service_token(service, _payment_claims(quote_token), headers={})
+        assert _static(signer).verify(token, requirements).is_valid is True
+
+    def test_seller_key_with_private_members_and_unknown_alg(
+        self, mock_router: respx.MockRouter, service: FakePaymentService
+    ) -> None:
+        signer = seller_signer()
+        bad_key = {**signer.public_jwk, "alg": "RSA-OAEP", "d": "private-d-value"}
+        mock_router.get(SELLER_JWKS_URL).mock(
+            return_value=httpx.Response(200, json={"keys": [bad_key]})
+        )
+        requirements = _requirements(signer)
+        token = service.issue(requirements["extra"]["quoteToken"])
+        result = _verifier(JwksSellerKeyResolver(SELLER_URL)).verify(token, requirements)
+        _assert_invalid(result, "invalid_quote", "")
+        assert result.invalid_message == (
+            f"Quote token signature invalid: JWK {signer.public_jwk['kid']}: invalid key material"
+        )
+
+
 class TestServiceJwksRequest:
     def test_request_headers_are_sent(self, mock_router: respx.MockRouter) -> None:
         service = FakePaymentService()

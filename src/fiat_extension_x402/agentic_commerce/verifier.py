@@ -245,7 +245,16 @@ def _verify_with_jwks(token: str, jwks: dict[str, Any]) -> dict[str, Any]:
     last_error: Exception = ValidationError("No matching key found in JWKS")
     for key_data in candidates:
         try:
-            return _verify_with_key(token, jwt.PyJWK.from_dict(key_data).key)
+            key = jwt.PyJWK.from_dict(key_data).key
+        except jwt.PyJWTError:
+            # PyJWT's key-import errors can include the whole JWK, private
+            # members and all, so name the key by its kid instead.
+            key_kid = key_data.get("kid")
+            label = f"JWK {key_kid}" if isinstance(key_kid, str) else "JWK"
+            last_error = ValidationError(f"{label}: invalid key material")
+            continue
+        try:
+            return _verify_with_key(token, key)
         except jwt.PyJWTError as exc:
             last_error = exc
     raise last_error

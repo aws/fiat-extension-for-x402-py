@@ -286,7 +286,9 @@ replayed proofs, pass a `DPoPNonceStore` shared by all instances of the seller:
 register_exact_agentic_commerce_server(server, signer=signer, dpop_nonce_store=store)
 ```
 
-`dpop_max_age_seconds` (default 60) limits how old a proof may be.
+`dpop_max_age_seconds` (default 60) limits how old a proof may be. The store's
+`add(jti, expires_at)` gives the Unix time (seconds) from which it may forget a
+proof id; until then `has(jti)` must return `True`.
 
 ## Failure reasons
 

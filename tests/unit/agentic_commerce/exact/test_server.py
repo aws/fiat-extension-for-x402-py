@@ -54,6 +54,20 @@ class _InMemoryNonceStore:
         self.seen.add(jti)
 
 
+class _EvictingNonceStore:
+    """Replay store that forgets a proof id as soon as ``time.time()`` reaches its expiry."""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, int] = {}
+
+    def has(self, jti: str) -> bool:
+        expires_at = self.seen.get(jti)
+        return expires_at is not None and time.time() < expires_at
+
+    def add(self, jti: str, expires_at: int) -> None:
+        self.seen[jti] = expires_at
+
+
 def _scheme(**kwargs: Any) -> ExactAgenticCommerceServerScheme:
     return ExactAgenticCommerceServerScheme(signer=seller_signer(), **kwargs)
 
@@ -301,6 +315,34 @@ class TestBeforeVerifyDpopProof:
         proof = buyer.proof()
         assert scheme.before_verify(buyer.context({"DPoP": proof})) is None
         assert scheme.before_verify(buyer.context({"DPoP": proof})) == AbortResult(
+            reason="dpop_invalid"
+        )
+
+    @pytest.mark.parametrize("max_age", [60, 10])
+    def test_replay_rejected_for_the_whole_acceptance_window(
+        self, max_age: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buyer = _Buyer()
+        scheme = _scheme(dpop_nonce_store=_EvictingNonceStore(), dpop_max_age_seconds=max_age)
+        iat = 1_700_000_000
+        # Accepted up to 5 seconds (clock skew) past the maximum age.
+        last_accepted = iat + max_age + 5
+        clock = {"now": float(iat)}
+        monkeypatch.setattr(time, "time", lambda: clock["now"])
+        proof = buyer.proof(iat=iat)
+        assert scheme.before_verify(buyer.context({"DPoP": proof})) is None
+
+        replayed = {}
+        for second in range(iat, last_accepted + 2):
+            for now in (second, second + 0.5):
+                clock["now"] = now
+                replayed[now - iat] = scheme.before_verify(buyer.context({"DPoP": proof}))
+        assert replayed == dict.fromkeys(replayed, AbortResult(reason="dpop_invalid"))
+
+        clock["now"] = last_accepted + 0.5
+        fresh = buyer.proof(iat=iat)
+        assert scheme.before_verify(buyer.context({"DPoP": fresh})) is None
+        assert scheme.before_verify(buyer.context({"DPoP": fresh})) == AbortResult(
             reason="dpop_invalid"
         )
 

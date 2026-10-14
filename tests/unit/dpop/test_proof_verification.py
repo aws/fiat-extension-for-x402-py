@@ -8,6 +8,7 @@ import base64
 import json
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import jwt as pyjwt
@@ -23,6 +24,9 @@ from fiat_extension_x402.exceptions import DPoPError
 from tests.support import dpop_proof, ec_key
 
 HTU = "https://example.com/resource"
+
+# Seconds a proof's iat may be off the verifier's clock in either direction.
+CLOCK_SKEW = 5
 
 
 def _public(jwk: dict[str, str]) -> dict[str, str]:
@@ -65,6 +69,39 @@ class _InMemoryNonceStore:
 
     def add(self, jti: str, expires_at: int) -> None:
         self.seen[jti] = expires_at
+
+
+class _Clock:
+    """A clock the test sets, read through ``time.time``."""
+
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class _EvictingNonceStore:
+    """Replay store that forgets a proof id as soon as the clock reaches its expiry."""
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self._clock = clock
+        self.seen: dict[str, int] = {}
+
+    def has(self, jti: str) -> bool:
+        expires_at = self.seen.get(jti)
+        return expires_at is not None and self._clock() < expires_at
+
+    def add(self, jti: str, expires_at: int) -> None:
+        self.seen[jti] = expires_at
+
+
+def _outcome(proof: str, options: dict[str, Any]) -> str:
+    try:
+        verify_dpop_proof(proof, options)
+    except DPoPError as exc:
+        return str(exc)
+    return "accepted"
 
 
 class TestVerifyDpopProof:
@@ -146,6 +183,20 @@ class TestVerifyDpopProof:
         with pytest.raises(DPoPError, match="signature"):
             verify_dpop_proof(tampered, {"htm": "POST", "htu": HTU})
 
+    @pytest.mark.parametrize(
+        ("extra", "label"), [({}, "JWK"), ({"kid": "buyer-key"}, "JWK buyer-key")]
+    )
+    def test_unimportable_jwk_is_not_echoed(self, extra: dict[str, Any], label: str) -> None:
+        key, jwk = ec_key("buyer")
+        header_jwk = {"crv": jwk["crv"], "x": jwk["x"], "y": jwk["y"], "d": "private-d-value"}
+        proof = _signed(_claims(), key, {"typ": "dpop+jwt", "jwk": {**header_jwk, **extra}})
+        with pytest.raises(DPoPError) as excinfo:
+            verify_dpop_proof(proof, {"htm": "POST", "htu": HTU})
+        assert str(excinfo.value) == (
+            f"DPoP proof signature verification failed: {label}: invalid key material"
+        )
+        assert excinfo.value.__cause__ is None
+
     def test_signed_by_key_other_than_header_jwk(self) -> None:
         key, _ = ec_key("buyer")
         _, other_jwk = ec_key("other")
@@ -217,7 +268,7 @@ class TestVerifyDpopProofNonceStore:
         store = _InMemoryNonceStore()
 
         claims = verify_dpop_proof(proof, {"htm": "POST", "htu": HTU, "nonce_store": store})
-        assert store.seen[claims["jti"]] == claims["iat"] + 60
+        assert store.seen[claims["jti"]] == claims["iat"] + 60 + CLOCK_SKEW + 1
 
         with pytest.raises(DPoPError, match="replay detected"):
             verify_dpop_proof(proof, {"htm": "POST", "htu": HTU, "nonce_store": store})
@@ -229,6 +280,62 @@ class TestVerifyDpopProofNonceStore:
             proof = dpop_proof(key, jwk, htm="POST", htu=HTU)
             verify_dpop_proof(proof, {"htm": "POST", "htu": HTU, "nonce_store": store})
         assert len(store.seen) == 2
+
+
+class TestVerifyDpopProofReplayWindow:
+    """A used proof stays rejected for as long as the proof itself is accepted."""
+
+    @pytest.mark.parametrize("max_age", [None, 10])
+    def test_replay_rejected_at_every_second_of_the_window(
+        self, max_age: int | None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        iat = 1_700_000_000
+        last_accepted = iat + (max_age or 60) + CLOCK_SKEW
+        clock = _Clock(iat)
+        monkeypatch.setattr(time, "time", clock)
+        options: dict[str, Any] = {
+            "htm": "POST",
+            "htu": HTU,
+            "nonce_store": _EvictingNonceStore(clock),
+        }
+        if max_age is not None:
+            options["max_age"] = max_age
+        key, jwk = ec_key("buyer")
+        proof = dpop_proof(key, jwk, htm="POST", htu=HTU, iat=iat)
+        assert _outcome(proof, options) == "accepted"
+
+        outcomes: dict[float, str] = {}
+        expected: dict[float, str] = {}
+        for second in range(iat, last_accepted + 2):
+            for now in (second, second + 0.5):
+                clock.now = now
+                outcomes[now - iat] = _outcome(proof, options)
+                expected[now - iat] = (
+                    "DPoP proof replay detected"
+                    if now < last_accepted + 1
+                    else "DPoP proof expired"
+                )
+        assert outcomes == expected
+
+    @pytest.mark.parametrize("max_age", [None, 10])
+    def test_first_use_in_the_last_accepted_second(
+        self, max_age: int | None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        iat = 1_700_000_000
+        last_accepted = iat + (max_age or 60) + CLOCK_SKEW
+        clock = _Clock(last_accepted + 0.5)
+        monkeypatch.setattr(time, "time", clock)
+        options: dict[str, Any] = {
+            "htm": "POST",
+            "htu": HTU,
+            "nonce_store": _EvictingNonceStore(clock),
+        }
+        if max_age is not None:
+            options["max_age"] = max_age
+        key, jwk = ec_key("buyer")
+        proof = dpop_proof(key, jwk, htm="POST", htu=HTU, iat=iat)
+        assert _outcome(proof, options) == "accepted"
+        assert _outcome(proof, options) == "DPoP proof replay detected"
 
 
 class TestExtractDpopThumbprint:

@@ -69,6 +69,14 @@ def verify_dpop_proof(proof: str, options: dict[str, Any]) -> dict[str, Any]:
 
     try:
         key = pyjwt.PyJWK.from_dict({**jwk_data, "alg": alg}).key
+    except pyjwt.PyJWTError:
+        # PyJWT's key-import errors can include the whole JWK, so name it by kid.
+        kid = jwk_data.get("kid")
+        label = f"JWK {kid}" if isinstance(kid, str) else "JWK"
+        raise DPoPError(
+            f"DPoP proof signature verification failed: {label}: invalid key material"
+        ) from None
+    try:
         claims: dict[str, Any] = pyjwt.decode(
             proof,
             key,
@@ -123,7 +131,10 @@ def verify_dpop_proof(proof: str, options: dict[str, Any]) -> dict[str, Any]:
         jti = claims["jti"]
         if nonce_store.has(jti):
             raise DPoPError("DPoP proof replay detected", {"jti": jti})
-        expires_at = int(claims["iat"]) + max_age
+        # The proof is accepted until ``now - iat`` exceeds max_age + clock skew,
+        # with ``now`` in whole seconds, so it must stay recorded until the second
+        # after that: the store may forget it once the time reaches ``expires_at``.
+        expires_at = iat + max_age + _CLOCK_SKEW + 1
         nonce_store.add(jti, expires_at)
 
     return claims
