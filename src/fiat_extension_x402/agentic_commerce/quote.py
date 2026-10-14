@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from time import time
 from typing import Any
@@ -18,6 +19,53 @@ from fiat_extension_x402.signers.protocol import QuoteSigner
 
 # Optional route details copied from ``extra`` into the quote when present.
 _OPTIONAL_QUOTE_CLAIMS = ("description", "dimensions", "support", "terms")
+
+# The payment service rejects prices with more decimal places than this.
+_MAX_PRICE_DECIMAL_PLACES = 8
+
+_ASSET_PREFIX = "iso4217:"
+
+# The amount and asset of an ``{amount, asset}`` price, matched in full: a plain
+# non-negative decimal in ASCII digits, and ``iso4217:`` with an upper-case
+# three-letter code, the asset a string price becomes.
+_AMOUNT_PATTERN = re.compile(r"[0-9]+(?:\.([0-9]+))?")
+_ASSET_PATTERN = re.compile(r"iso4217:[A-Z]{3}")
+
+
+def _check_asset_amount(amount: object, asset: object) -> tuple[str, str]:
+    """Check the amount and asset of an ``{amount, asset}`` route price.
+
+    The amount must be a plain non-negative decimal string (``"0.50"``, never
+    ``"$0.50"``, ``" 0.50"`` or ``"5e-1"``) with at most 8 decimal places, as for a
+    string price. The asset must be ``iso4217:`` and an upper-case three-letter
+    code. Error messages show the amount and asset alone.
+
+    :param amount: The price's amount.
+    :param asset: The price's asset.
+    :returns: The amount and asset, once checked.
+    :raises ValidationError: if the amount or asset is not a string or is
+        malformed, or the amount has more than 8 decimal places.
+    """
+
+    def shown() -> str:
+        try:
+            return repr({"amount": amount, "asset": asset})
+        except Exception:  # noqa: BLE001 - e.g. an int over the str digit limit
+            return "(not representable)"
+
+    match = _AMOUNT_PATTERN.fullmatch(amount) if isinstance(amount, str) else None
+    if (
+        match is None
+        or not isinstance(amount, str)  # Implied by match; narrows amount for mypy.
+        or not isinstance(asset, str)
+        or not _ASSET_PATTERN.fullmatch(asset)
+    ):
+        raise ValidationError(f"Invalid price: {shown()}")
+    if len(match.group(1) or "") > _MAX_PRICE_DECIMAL_PLACES:
+        raise ValidationError(
+            f"Price may have at most {_MAX_PRICE_DECIMAL_PLACES} decimal places: {shown()}"
+        )
+    return amount, asset
 
 
 def enhance_payment_requirements(
@@ -38,7 +86,8 @@ def enhance_payment_requirements(
     :param payment_requirements: Base x402 payment requirements (wire field names).
     :param signer: Signer for the quote token. Its service URL becomes ``iss``.
     :returns: Enhanced payment requirements.
-    :raises ValidationError: if the signer's service URL or ``payTo`` is empty, or
+    :raises ValidationError: if the signer's service URL or ``payTo`` is empty, the
+        amount or asset is not one ``parse_price`` returns, or
         ``extra.settlement.product_id`` disagrees with ``payTo``.
     """
     issuer = signer.get_service_url()
@@ -48,6 +97,12 @@ def enhance_payment_requirements(
             "Configure a non-empty service_url on the signer; it becomes the quote "
             "token's 'iss' claim, which the service requires."
         )
+
+    # The price is checked again where it is signed, for a caller that skips
+    # parse_price.
+    amount, asset = _check_asset_amount(
+        payment_requirements.get("amount"), payment_requirements.get("asset")
+    )
 
     product_id = str(payment_requirements.get("payTo") or "").strip()
     if not product_id:
@@ -69,8 +124,8 @@ def enhance_payment_requirements(
         "exp": now + validity,
         "jti": str(uuid.uuid4()),
         "price": {
-            "amount": payment_requirements["amount"],
-            "currency": payment_requirements.get("asset", "").replace("iso4217:", ""),
+            "amount": amount,
+            "currency": asset[len(_ASSET_PREFIX) :],
         },
         "payTo": product_id,
         "reference": extra.get("reference") or "RESOURCE",

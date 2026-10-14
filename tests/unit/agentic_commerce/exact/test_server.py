@@ -10,9 +10,22 @@ from typing import Any
 
 import jwt
 import pytest
-from x402.schemas import AbortResult, AssetAmount, PaymentPayload, PaymentRequirements
+from x402 import x402FacilitatorSync, x402ResourceServerSync
+from x402.schemas import (
+    AbortResult,
+    AssetAmount,
+    PaymentPayload,
+    PaymentRequirements,
+    ResourceConfig,
+)
 from x402.schemas.hooks import VerifyContext
 
+from fiat_extension_x402 import (
+    AgenticCommerceVerifier,
+    StaticSellerKeyResolver,
+    register_exact_agentic_commerce_facilitator,
+    register_exact_agentic_commerce_server,
+)
 from fiat_extension_x402.agentic_commerce.exact import ExactAgenticCommerceServerScheme
 from fiat_extension_x402.constants import (
     ASSET_TRANSFER_METHOD,
@@ -20,7 +33,14 @@ from fiat_extension_x402.constants import (
     SENTINEL_PAY_TO,
 )
 from fiat_extension_x402.exceptions import ValidationError
-from tests.support import SELLER_URL, FakePaymentService, dpop_proof, ec_key, seller_signer
+from tests.support import (
+    SELLER_URL,
+    SERVICE_JWKS_BASE_URL,
+    FakePaymentService,
+    dpop_proof,
+    ec_key,
+    seller_signer,
+)
 
 URL = f"{SELLER_URL}/weather"
 
@@ -162,7 +182,20 @@ class TestParsePrice:
         assert parsed.asset == "iso4217:GBP"
 
     @pytest.mark.parametrize(
-        "price", ["", "abc", "USD 1.50", "1.50 usd", "1.", "1,50", "-1.50", "$-1", "1.50 USDD"]
+        "price",
+        [
+            "",
+            "abc",
+            "USD 1.50",
+            "1.50 usd",
+            "1.",
+            "1,50",
+            "-1.50",
+            "$-1",
+            "1.50 USDD",
+            "\u0661.\u0665\u0660",
+            "$1.\u0665",
+        ],
     )
     def test_invalid_string_raises(self, price: str) -> None:
         with pytest.raises(ValidationError, match="Invalid price"):
@@ -181,6 +214,18 @@ class TestParsePrice:
         with pytest.raises(ValidationError, match="finite, non-negative"):
             _scheme().parse_price(float("inf"), "aws:base")
 
+    def test_negative_zero_is_zero(self) -> None:
+        assert _scheme().parse_price(-0.0, "aws:base").amount == "0.0"
+
+    @pytest.mark.parametrize("price", ["$1.50", "2 EUR", "  $3  ", 1.5, 2, 0, -0.0, 1e-8, 1e20])
+    def test_parsed_price_passes_the_signing_check(self, price: Any) -> None:
+        scheme = _scheme()
+        parsed = scheme.parse_price(price, "aws:base")
+        requirements = _base_requirements().model_copy(
+            update={"amount": parsed.amount, "asset": parsed.asset}
+        )
+        assert scheme.enhance_payment_requirements(requirements).amount == parsed.amount
+
     def test_small_float_uses_plain_decimal_notation(self) -> None:
         assert _scheme().parse_price(1e-7, "aws:base").amount == "0.0000001"
 
@@ -191,6 +236,169 @@ class TestParsePrice:
     def test_more_than_eight_decimal_places_raises(self, price: Any) -> None:
         with pytest.raises(ValidationError, match="at most 8 decimal places"):
             _scheme().parse_price(price, "aws:base")
+
+
+class _Unrepresentable:
+    def __repr__(self) -> str:
+        raise RuntimeError("no repr")
+
+
+def _shown(amount: Any, asset: Any) -> str:
+    return repr({"amount": amount, "asset": asset})
+
+
+class TestParseObjectPrice:
+    """An ``AssetAmount`` or ``{amount, asset}`` price follows the string-price rules."""
+
+    @pytest.mark.parametrize(
+        "amount", ["0", "1.50", "01.50", "0.00000001", "99.99999990", "1" * 30]
+    )
+    def test_amount_passes_through(self, amount: str) -> None:
+        price = AssetAmount(amount=amount, asset="iso4217:USD")
+        assert _scheme().parse_price(price, "aws:base") is price
+        parsed = _scheme().parse_price({"amount": amount, "asset": "iso4217:USD"}, "aws:base")  # type: ignore[arg-type]
+        assert parsed == AssetAmount(amount=amount, asset="iso4217:USD")
+
+    @pytest.mark.parametrize("asset", ["iso4217:EUR", "iso4217:JPY"])
+    def test_asset_accepted(self, asset: str) -> None:
+        price = AssetAmount(amount="1", asset=asset, extra={"k": "v"})
+        assert _scheme().parse_price(price, "aws:base") is price
+
+    @pytest.mark.parametrize("amount", ["0.123456789", "1.000000000", "0.000000001"])
+    @pytest.mark.parametrize("as_dict", [False, True])
+    def test_more_than_eight_decimal_places_raises(self, amount: str, as_dict: bool) -> None:
+        price: Any = {"amount": amount, "asset": "iso4217:USD"}
+        with pytest.raises(ValidationError) as raised:
+            _scheme().parse_price(price if as_dict else AssetAmount(**price), "aws:base")
+        assert str(raised.value) == (
+            f"Price may have at most 8 decimal places: {_shown(amount, 'iso4217:USD')}"
+        )
+
+    @pytest.mark.parametrize(
+        "amount",
+        [
+            "1e5",
+            "1E5",
+            "1.5e-3",
+            "-1",
+            "-0",
+            "+1",
+            "",
+            " ",
+            " 1.50",
+            "1.50 ",
+            "1.50\n",
+            "1.",
+            ".5",
+            "1,50",
+            "1_000",
+            "0x10",
+            "NaN",
+            "Infinity",
+            "$1.50",
+            "1.50 USD",
+            "\u0661",
+            "1.\u0665",
+        ],
+    )
+    @pytest.mark.parametrize("as_dict", [False, True])
+    def test_amount_not_a_plain_decimal_raises(self, amount: str, as_dict: bool) -> None:
+        price: Any = {"amount": amount, "asset": "iso4217:USD"}
+        with pytest.raises(ValidationError) as raised:
+            _scheme().parse_price(price if as_dict else AssetAmount(**price), "aws:base")
+        assert str(raised.value) == f"Invalid price: {_shown(amount, 'iso4217:USD')}"
+
+    @pytest.mark.parametrize(
+        "asset",
+        [
+            "",
+            "USD",
+            "iso4217:usd",
+            "iso4217:US",
+            "iso4217:USDD",
+            "iso4217:iso4217:USD",
+            " iso4217:USD",
+            "iso4217:USD\n",
+            "ISO4217:USD",
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        ],
+    )
+    @pytest.mark.parametrize("as_dict", [False, True])
+    def test_asset_not_iso4217_raises(self, asset: str, as_dict: bool) -> None:
+        price: Any = {"amount": "1.50", "asset": asset}
+        with pytest.raises(ValidationError) as raised:
+            _scheme().parse_price(price if as_dict else AssetAmount(**price), "aws:base")
+        assert str(raised.value) == f"Invalid price: {_shown('1.50', asset)}"
+
+    @pytest.mark.parametrize(
+        "price",
+        [
+            {"amount": 1.5, "asset": "iso4217:USD"},
+            {"amount": 1, "asset": "iso4217:USD"},
+            {"amount": "1", "asset": None},
+            {"amount": "1"},
+            {"asset": "iso4217:USD"},
+            {},
+        ],
+    )
+    def test_dict_field_missing_or_not_a_string_raises(self, price: dict[str, Any]) -> None:
+        with pytest.raises(ValidationError) as raised:
+            _scheme().parse_price(price, "aws:base")  # type: ignore[arg-type]
+        assert str(raised.value) == (
+            f"Invalid price: {_shown(price.get('amount'), price.get('asset'))}"
+        )
+
+    def test_unvalidated_asset_amount_raises(self) -> None:
+        price = AssetAmount.model_construct(amount=1.5, asset="iso4217:USD")
+        with pytest.raises(ValidationError) as raised:
+            _scheme().parse_price(price, "aws:base")
+        assert str(raised.value) == f"Invalid price: {_shown(1.5, 'iso4217:USD')}"
+
+    @pytest.mark.parametrize("as_dict", [False, True])
+    def test_message_leaves_out_extra(self, as_dict: bool) -> None:
+        price: Any = {"amount": "1.50", "asset": "usd", "extra": {"secret": "s3cr3t"}}
+        with pytest.raises(ValidationError) as raised:
+            _scheme().parse_price(price if as_dict else AssetAmount(**price), "aws:base")
+        assert str(raised.value) == "Invalid price: {'amount': '1.50', 'asset': 'usd'}"
+
+    def test_unrepresentable_field_is_not_shown(self) -> None:
+        price = {"amount": _Unrepresentable(), "asset": "iso4217:USD"}
+        with pytest.raises(ValidationError) as raised:
+            _scheme().parse_price(price, "aws:base")  # type: ignore[arg-type]
+        assert str(raised.value) == "Invalid price: (not representable)"
+
+    def test_bad_price_signs_no_quote_through_the_resource_server(self) -> None:
+        """The first 402 for a route with a malformed object price is an error, not a quote."""
+        signer = seller_signer()
+        facilitator = register_exact_agentic_commerce_facilitator(
+            x402FacilitatorSync(),
+            verifier=AgenticCommerceVerifier(
+                seller_key_resolver=StaticSellerKeyResolver(signer.public_jwk),
+                payment_token_jwks_url=SERVICE_JWKS_BASE_URL,
+            ),
+        )
+        server = register_exact_agentic_commerce_server(
+            x402ResourceServerSync(facilitator), signer=signer
+        )
+        server.initialize()
+
+        def build(price: Any) -> list[PaymentRequirements]:
+            config = ResourceConfig(
+                scheme="exact", pay_to="seller-1", price=price, network="aws:base"
+            )
+            return server.build_payment_requirements(config)
+
+        good = build(AssetAmount(amount="0.10", asset="iso4217:EUR"))[0]
+        claims = jwt.decode(good.extra["quoteToken"], options={"verify_signature": False})
+        assert claims["price"] == {"amount": "0.10", "currency": "EUR"}
+        for bad in (
+            AssetAmount(amount="0.123456789", asset="iso4217:USD"),
+            AssetAmount(amount="1e5", asset="iso4217:USD"),
+            AssetAmount(amount="1", asset="USD"),
+            {"amount": "1", "asset": "iso4217:iso4217:GBP"},
+        ):
+            with pytest.raises(ValidationError):
+                build(bad)
 
 
 class TestEnhancePaymentRequirements:

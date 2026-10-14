@@ -22,7 +22,11 @@ import jwt
 from x402.schemas import AbortResult, AssetAmount, PaymentRequirements, Price, SupportedKind
 from x402.schemas.hooks import VerifyContext
 
-from fiat_extension_x402.agentic_commerce.quote import enhance_payment_requirements
+from fiat_extension_x402.agentic_commerce.quote import (
+    _MAX_PRICE_DECIMAL_PLACES,
+    _check_asset_amount,
+    enhance_payment_requirements,
+)
 from fiat_extension_x402.constants import (
     AGENTIC_COMMERCE_CAIP_FAMILY,
     ASSET_TRANSFER_METHOD,
@@ -35,14 +39,11 @@ from fiat_extension_x402.dpop.verification import extract_dpop_thumbprint, verif
 from fiat_extension_x402.exceptions import DPoPError, ValidationError
 from fiat_extension_x402.signers.protocol import QuoteSigner
 
-# "$1.50", "1.50 USD", "1.50": a non-negative decimal with an optional leading
-# "$" and an optional trailing ISO 4217 code (defaults to USD).
-_MONEY_PATTERN = re.compile(r"^\$?(\d+(?:\.\d+)?)\s*([A-Z]{3})?$")
+# "$1.50", "1.50 USD", "1.50": a non-negative decimal in ASCII digits with an
+# optional leading "$" and an optional trailing ISO 4217 code (defaults to USD).
+_MONEY_PATTERN = re.compile(r"^\$?([0-9]+(?:\.[0-9]+)?)\s*([A-Z]{3})?$")
 
 _DEFAULT_DPOP_MAX_AGE_SECONDS = 60
-
-# The payment service rejects prices with more decimal places than this.
-_MAX_PRICE_DECIMAL_PLACES = 8
 
 
 class ExactAgenticCommerceScheme:
@@ -90,11 +91,16 @@ class ExactAgenticCommerceScheme:
 
         :param price: ``"$1.50"``, ``"1.50 USD"``, ``1.50``, or an ``AssetAmount``.
         :param network: Target network (pricing does not depend on it).
-        :raises ValidationError: if the price cannot be parsed.
+        :raises ValidationError: if the price cannot be parsed, or its amount has
+            more than 8 decimal places.
         """
+        # An object price must be a decimal amount with at most 8 decimal places,
+        # as for a string price, and an ISO 4217 asset.
         if isinstance(price, AssetAmount):
+            _check_asset_amount(price.amount, price.asset)
             return price
         if isinstance(price, dict):
+            _check_asset_amount(price.get("amount"), price.get("asset"))
             return AssetAmount.model_validate(price)
         if isinstance(price, (int, float)):
             amount, currency = str(price), "USD"
@@ -111,8 +117,8 @@ class ExactAgenticCommerceScheme:
                 f"Price may have at most {_MAX_PRICE_DECIMAL_PLACES} decimal places: {price!r}"
             )
         if isinstance(price, (int, float)):
-            # Plain decimal notation, never exponent form ("1E-7").
-            amount = format(value, "f")
+            # Plain decimal notation, never exponent form ("1E-7") or "-0.0".
+            amount = format(value.copy_abs(), "f")
         asset = f"iso4217:{currency}" if currency != "USD" else DEFAULT_ASSET
         return AssetAmount(amount=amount, asset=asset, extra={})
 
@@ -122,7 +128,12 @@ class ExactAgenticCommerceScheme:
         supported_kind: SupportedKind | None = None,
         extensions: list[str] | None = None,
     ) -> PaymentRequirements:
-        """Sign a quote token for the requirements and embed it in ``extra.quoteToken``."""
+        """Sign a quote token for the requirements and embed it in ``extra.quoteToken``.
+
+        :raises ValidationError: if the amount or asset is not one ``parse_price``
+            returns, the signer's service URL or ``payTo`` is empty, or
+            ``extra.settlement.product_id`` disagrees with ``payTo``.
+        """
         base: dict[str, Any] = requirements.model_dump(by_alias=True, exclude_none=True)
         return PaymentRequirements.model_validate(enhance_payment_requirements(base, self._signer))
 
