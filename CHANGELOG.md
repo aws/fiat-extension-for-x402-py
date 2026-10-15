@@ -5,10 +5,11 @@ All notable changes to this project are documented here. The project follows
 
 ## 1.0.0
 
-First public release.
+Initial release: the seller and facilitator roles of AWS Marketplace Agentic
+Commerce on x402, for Python 3.10 or later and x402 2.20 or later.
 
 - `exact` payment scheme for AWS Marketplace Agentic Commerce networks
-  (`aws:*`), for x402 2.20 or later:
+  (`aws:*`):
   - `ExactAgenticCommerceServerScheme` prices routes in fiat, signs a quote
     token (including the AWS Marketplace product ID) into every `402`, and
     checks DPoP proofs.
@@ -19,43 +20,28 @@ First public release.
     objects. Routes are protected with x402's own FastAPI and Flask middleware.
 - Quote signers: `KmsQuoteSigner` (AWS KMS) and `LocalQuoteSigner` (a key you
   manage, including `LocalQuoteSigner.from_pem`), plus the `QuoteSigner`
-  protocol for other key stores.
+  protocol for other key stores. `LocalQuoteSigner.from_pem` rejects RSA keys
+  marked for RSA-PSS only.
 - Seller key resolvers: `KmsSellerKeyResolver`, `JwksSellerKeyResolver` and
   `StaticSellerKeyResolver`. The seller's key is always configured, never
   discovered from the quote token.
 - `jwks_document` builds and validates the JWKS a seller serves at
   `/.well-known/jwks.json`. RSA quote keys must be at least 2048 bits.
-  `LocalQuoteSigner.from_pem` rejects RSA keys marked for RSA-PSS only.
-- DPoP replay protection keeps a proof id in the `DPoPNonceStore` until the
-  second after the proof stops being accepted (`iat` + maximum age + 5 seconds
-  of clock skew + 1), so a store that evicts at that time never forgets a proof
-  that would still be accepted.
-- An error for a JWK that cannot be imported names the key by its `kid` and
-  never includes the key's members.
-- An `AssetAmount` or `{"amount", "asset"}` route price is checked as a string
-  or number price is. Its `amount` must be a plain decimal string with at most 8
-  decimal places, and its `asset` must be `iso4217:` and an upper-case
-  three-letter code. Anything else is a `ValidationError` instead of a signed
-  quote: for example the amount `0.123456789`, `1e5` or `$1.50`, or the asset
-  `USD`. `enhance_payment_requirements` applies the same rule to the
-  requirements it signs, so it also rejects a missing asset and a doubled
-  `iso4217:` prefix.
-- String prices accept ASCII digits only: digits from other scripts, such as
-  Arabic-Indic digits, are a `ValidationError`. The number `-0.0` is priced as
-  `0.0`. `parse_money_to_decimal` also accepts ASCII digits only, and rejects
-  booleans.
-- A dict route price whose `extra` is not a dict, and a boolean route price, are
-  an `Invalid price: ...` `ValidationError`. The message shows only the amount
-  and asset, never `extra`.
-- The server scheme checks and records a DPoP proof's `jti` in the
-  `DPoPNonceStore` only after the facilitator has accepted the payment token, in
-  a new `after_verify` scheme hook. A forged token bound to the caller's own key
+- Route prices as a string (`"$0.01"`), a number, or an `AssetAmount` /
+  `{"amount", "asset"}` dict, where `amount` is a plain decimal string with at
+  most 8 decimal places and `asset` is `iso4217:` and an upper-case three-letter
+  code. Prices accept ASCII digits only. Any other price is a `ValidationError`
+  that shows only the amount and asset, never a signed quote.
+- DPoP replay protection: the server scheme records a proof's `jti` in the
+  `DPoPNonceStore` only after the facilitator has accepted the payment token (in
+  the `after_verify` scheme hook), until the second after the proof stops being
+  accepted (`iat` + maximum age + 5 seconds of clock skew + 1). A forged token
   adds nothing to the store. A replayed proof is refused with `dpop_invalid`
-  after the facilitator call: the seller's `on_after_verify` hooks run, and
+  after the facilitator call; the seller's `on_after_verify` hooks run, and
   `on_verified_payment_canceled` is called with `after_verify_aborted`, for a
   payment an earlier request may already have completed, so that reason alone
-  must not void or refund it. Nothing is settled. A store error (logged as a
-  warning), or a proof that goes stale during the facilitator call or the store
-  lookup, is refused the same way. With a nonce store, a transport context
-  passed to `verify_payment` by the caller must support weak references; x402's
-  `HTTPTransportContext` does.
+  must not void or refund it. Nothing is settled. With a nonce store, a
+  transport context passed to `verify_payment` by the caller must support weak
+  references; x402's `HTTPTransportContext` does.
+- An error for a JWK that cannot be imported names the key by its `kid` and
+  never includes the key's members.
