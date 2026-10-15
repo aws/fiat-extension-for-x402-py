@@ -10,7 +10,7 @@ a fake payment service whose JWKS is served through ``respx``.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
@@ -22,6 +22,7 @@ from x402.http.types import PaymentOption, RouteConfig
 
 from fiat_extension_x402 import (
     AgenticCommerceVerifier,
+    ExactAgenticCommerceFacilitatorScheme,
     StaticSellerKeyResolver,
     register_exact_agentic_commerce_facilitator,
     register_exact_agentic_commerce_server,
@@ -67,7 +68,9 @@ def _verifier(signer: Any) -> AgenticCommerceVerifier:
     )
 
 
-def fastapi_client(signer: Any) -> Any:
+def fastapi_client(
+    signer: Any, configure: Callable[[Any], None] | None = None, **options: Any
+) -> Any:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from x402.http.middleware.fastapi import payment_middleware
@@ -75,11 +78,17 @@ def fastapi_client(signer: Any) -> Any:
     facilitator = register_exact_agentic_commerce_facilitator(
         x402Facilitator(), verifier=_verifier(signer)
     )
-    server = register_exact_agentic_commerce_server(x402ResourceServer(facilitator), signer=signer)
+    server = register_exact_agentic_commerce_server(
+        x402ResourceServer(facilitator), signer=signer, **options
+    )
+    if configure is not None:
+        configure(server)
     app = FastAPI()
 
     @app.get("/weather")
     def weather() -> dict[str, int]:
+        if configure is not None:
+            configure("served")
         return {"temp": 72}
 
     @app.get("/ping")
@@ -90,7 +99,9 @@ def fastapi_client(signer: Any) -> Any:
     return TestClient(app)
 
 
-def flask_client(signer: Any) -> Any:
+def flask_client(
+    signer: Any, configure: Callable[[Any], None] | None = None, **options: Any
+) -> Any:
     from flask import Flask
     from x402.http.middleware.flask import payment_middleware
 
@@ -98,12 +109,16 @@ def flask_client(signer: Any) -> Any:
         x402FacilitatorSync(), verifier=_verifier(signer)
     )
     server = register_exact_agentic_commerce_server(
-        x402ResourceServerSync(facilitator), signer=signer
+        x402ResourceServerSync(facilitator), signer=signer, **options
     )
+    if configure is not None:
+        configure(server)
     app = Flask(__name__)
 
     @app.get("/weather")
     def weather() -> dict[str, int]:
+        if configure is not None:
+            configure("served")
         return {"temp": 72}
 
     @app.get("/ping")
@@ -115,9 +130,15 @@ def flask_client(signer: Any) -> Any:
 
 
 @pytest.fixture(params=["fastapi", "flask"])
-def seller(request: pytest.FixtureRequest, service: FakePaymentService) -> Any:
+def framework(request: pytest.FixtureRequest) -> str:
+    framework: str = request.param
+    return framework
+
+
+@pytest.fixture
+def seller(framework: str, service: FakePaymentService) -> Any:
     signer = seller_signer()
-    return fastapi_client(signer) if request.param == "fastapi" else flask_client(signer)
+    return fastapi_client(signer) if framework == "fastapi" else flask_client(signer)
 
 
 def _offer(client: Any, path: str) -> dict[str, Any]:
@@ -301,3 +322,106 @@ def test_facilitator_runs_without_the_http_layer(service: FakePaymentService) ->
     assert asyncio.run(facilitator.verify(payload, requirements)).is_valid
     supported = facilitator.get_supported()
     assert [(k.scheme, k.network) for k in supported.kinds] == [("exact", "aws:base")]
+
+
+class _NonceStore:
+    """An in-memory DPoP nonce store that logs what it records."""
+
+    def __init__(self, *, records_in_has: bool = False) -> None:
+        self.records_in_has = records_in_has
+        self.added: dict[str, int] = {}
+
+    def has(self, jti: str) -> bool:
+        seen = jti in self.added
+        if self.records_in_has:
+            self.added.setdefault(jti, 0)
+        return seen
+
+    def add(self, jti: str, expires_at: int) -> None:
+        self.added[jti] = expires_at
+
+
+class _Seller:
+    """A seller with a nonce store, logging x402's hooks and its handler."""
+
+    def __init__(self, framework: str, store: _NonceStore) -> None:
+        self.events: list[str] = []
+        build = fastapi_client if framework == "fastapi" else flask_client
+        self.client = build(seller_signer(), self._configure, dpop_nonce_store=store)
+
+    def _configure(self, server: Any) -> None:
+        if server == "served":
+            self.events.append("served")
+            return
+        server.on_after_verify(lambda context: self.events.append("after_verify"))
+        server.on_verified_payment_canceled(
+            lambda context: self.events.append(f"canceled:{context.reason}")
+        )
+        server.on_after_settle(lambda context: self.events.append("settled"))
+
+
+class TestDPoPNonceStore:
+    """A proof id is recorded only once the facilitator has accepted the token."""
+
+    @staticmethod
+    def _bound_payment(
+        seller: _Seller, issuer: FakePaymentService
+    ) -> tuple[dict[str, Any], str, str]:
+        private_key, jwk = ec_key("buyer")
+        offer = _offer(seller.client, "/weather")
+        accepted = offer["accepts"][0]
+        token = issuer.issue(accepted["extra"]["quoteToken"], dpop_jwk=jwk)
+        proof = dpop_proof(
+            private_key, jwk, htm="GET", htu=offer["resource"]["url"], access_token=token
+        )
+        return accepted, token, proof
+
+    @pytest.mark.parametrize("count", [1, 20])
+    def test_forged_tokens_add_nothing(
+        self, framework: str, service: FakePaymentService, count: int
+    ) -> None:
+        store = _NonceStore()
+        seller = _Seller(framework, store)
+        for _ in range(count):
+            # Bound to the forger's own key and signed by a key the service never used.
+            accepted, token, proof = self._bound_payment(seller, FakePaymentService())
+            response = _pay(seller.client, "/weather", accepted, token, DPoP=proof)
+            assert response.status_code == 402
+            assert decode_header(response.headers["PAYMENT-REQUIRED"])["error"] != "dpop_invalid"
+        assert store.added == {}
+        assert seller.events == []
+
+    def test_facilitator_error_adds_nothing(
+        self, framework: str, service: FakePaymentService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _NonceStore()
+        seller = _Seller(framework, store)
+        accepted, token, proof = self._bound_payment(seller, service)
+
+        def fail(*args: Any) -> None:
+            raise RuntimeError("facilitator unavailable")
+
+        monkeypatch.setattr(ExactAgenticCommerceFacilitatorScheme, "verify", fail)
+        response = _pay(seller.client, "/weather", accepted, token, DPoP=proof)
+        assert response.status_code == 402
+        assert store.added == {}
+        assert seller.events == []
+
+    @pytest.mark.parametrize("records_in_has", [False, True])
+    def test_replay_is_verified_then_refused_and_nothing_settles(
+        self, framework: str, service: FakePaymentService, records_in_has: bool
+    ) -> None:
+        store = _NonceStore(records_in_has=records_in_has)
+        seller = _Seller(framework, store)
+        accepted, token, proof = self._bound_payment(seller, service)
+        assert _pay(seller.client, "/weather", accepted, token, DPoP=proof).status_code == 200
+        assert len(store.added) == 1
+        assert seller.events == ["after_verify", "served", "settled"]
+
+        seller.events.clear()
+        replay = _pay(seller.client, "/weather", accepted, token, DPoP=proof)
+        assert replay.status_code == 402
+        assert decode_header(replay.headers["PAYMENT-REQUIRED"])["error"] == "dpop_invalid"
+        assert "PAYMENT-RESPONSE" not in replay.headers
+        assert seller.events == ["after_verify", "canceled:after_verify_aborted"]
+        assert len(store.added) == 1

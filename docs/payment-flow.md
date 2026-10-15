@@ -18,6 +18,7 @@ sequenceDiagram
     S->>F: verify(payload, requirements)
     F->>P: fetch payment token JWKS
     F-->>S: valid
+    S->>S: after_verify: reject a replayed DPoP proof, record its jti
     S->>S: run the route handler
     S->>F: settle (no-op)
     S-->>B: 200 + PAYMENT-RESPONSE {transaction: payment id}
@@ -73,8 +74,14 @@ requirements: scheme, network, amount, asset, payTo, maxTimeoutSeconds and
 The seller scheme (`before_verify`) checks, for a DPoP-bound payment token
 (`cnf.jkt`): a `DPoP` header is present; its key thumbprint equals `cnf.jkt`; it
 is signed with an asymmetric algorithm; `htm` and `htu` match the request; `ath`
-is the hash of the payment token; it is no older than 60 seconds; and, with a
-nonce store, its `jti` has not been seen.
+is the hash of the payment token; and it is no older than 60 seconds. The payment
+token is not verified yet, so the nonce store is not used here.
+
+Once the facilitator has accepted the token, the seller scheme (`after_verify`)
+checks, with a nonce store, that the proof is still fresh and its `jti` has not
+been seen, and records the `jti`. A replayed proof is refused with `dpop_invalid`
+after the facilitator call, and x402 core reports the verified payment as
+canceled (`after_verify_aborted`); nothing is settled.
 
 The facilitator (`AgenticCommerceVerifier`) checks that:
 

@@ -3,8 +3,8 @@
 """Seller side of the ``exact`` scheme on AWS Marketplace Agentic Commerce networks.
 
 Register it on an x402 resource server; x402 core then calls it to price each
-route, to add a signed quote token to every 402 response, and before each
-payment is verified (where it checks DPoP proofs)::
+route, to add a signed quote token to every 402 response, and before and after
+each payment is verified (where it checks DPoP proofs)::
 
     from x402 import x402ResourceServer
     server = x402ResourceServer(facilitator_client)
@@ -13,14 +13,19 @@ payment is verified (where it checks DPoP proofs)::
 
 from __future__ import annotations
 
+import logging
 import re
+import time
+import weakref
+from dataclasses import dataclass
 from decimal import Decimal
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 import jwt
+import pydantic
 from x402.schemas import AbortResult, AssetAmount, PaymentRequirements, Price, SupportedKind
-from x402.schemas.hooks import VerifyContext
+from x402.schemas.hooks import VerifyContext, VerifyResultContext
 
 from fiat_extension_x402.agentic_commerce.quote import (
     _MAX_PRICE_DECIMAL_PLACES,
@@ -35,7 +40,11 @@ from fiat_extension_x402.constants import (
     SCHEME_EXACT,
 )
 from fiat_extension_x402.dpop.types import DPoPNonceStore
-from fiat_extension_x402.dpop.verification import extract_dpop_thumbprint, verify_dpop_proof
+from fiat_extension_x402.dpop.verification import (
+    _replay_expires_at,
+    extract_dpop_thumbprint,
+    verify_dpop_proof,
+)
 from fiat_extension_x402.exceptions import DPoPError, ValidationError
 from fiat_extension_x402.signers.protocol import QuoteSigner
 
@@ -45,13 +54,55 @@ _MONEY_PATTERN = re.compile(r"^\$?([0-9]+(?:\.[0-9]+)?)\s*([A-Z]{3})?$")
 
 _DEFAULT_DPOP_MAX_AGE_SECONDS = 60
 
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _PendingProof:
+    """A DPoP proof checked by ``before_verify``, not yet recorded."""
+
+    jti: str
+    expires_at: int
+
+
+class _PendingProofs:
+    """Proofs checked by ``before_verify``, by transport context, until ``after_verify``.
+
+    x402 core builds a new transport context for each request and passes the same
+    one to both hooks. It is keyed by identity (x402's is an unhashable dataclass)
+    and held weakly, so a request that never reaches ``after_verify`` (the
+    facilitator rejects the token, or another hook aborts) leaves nothing behind.
+    """
+
+    def __init__(self) -> None:
+        self._by_id: dict[int, tuple[weakref.ref[Any], _PendingProof]] = {}
+
+    def set(self, transport_context: object, proof: _PendingProof) -> None:
+        """Keep ``proof`` for ``transport_context``.
+
+        :raises TypeError: if ``transport_context`` cannot be weakly referenced.
+        """
+        key = id(transport_context)
+        # An id is reused only once its object is gone, and so its entry with it.
+        ref = weakref.ref(transport_context, lambda _: self._by_id.pop(key, None))
+        self._by_id[key] = (ref, proof)
+
+    def pop(self, transport_context: object) -> _PendingProof | None:
+        """Remove and return the proof kept for ``transport_context``, if any."""
+        entry = self._by_id.get(id(transport_context))
+        if entry is None or entry[0]() is not transport_context:
+            return None
+        del self._by_id[id(transport_context)]
+        return entry[1]
+
 
 class ExactAgenticCommerceScheme:
     """``exact`` server scheme for AWS Marketplace Agentic Commerce.
 
     :param signer: Signs quote tokens. Its service URL becomes the quote's ``iss``.
     :param dpop_nonce_store: Optional store of seen DPoP proof ids, to reject
-        replayed proofs.
+        replayed proofs. An id is checked and recorded only after the facilitator
+        has accepted the payment token.
     :param dpop_max_age_seconds: Maximum age of a DPoP proof.
     """
 
@@ -78,6 +129,7 @@ class ExactAgenticCommerceScheme:
         self._signer = signer
         self._dpop_nonce_store = dpop_nonce_store
         self._dpop_max_age_seconds = dpop_max_age_seconds
+        self._pending_proofs = _PendingProofs()
 
     @property
     def signer(self) -> QuoteSigner:
@@ -100,8 +152,15 @@ class ExactAgenticCommerceScheme:
             _check_asset_amount(price.amount, price.asset)
             return price
         if isinstance(price, dict):
-            _check_asset_amount(price.get("amount"), price.get("asset"))
-            return AssetAmount.model_validate(price)
+            amount, asset = _check_asset_amount(price.get("amount"), price.get("asset"))
+            try:
+                return AssetAmount.model_validate(price)
+            except pydantic.ValidationError:
+                # Pydantic's message would show the rest of the price, such as ``extra``.
+                shown = repr({"amount": amount, "asset": asset})
+                raise ValidationError(f"Invalid price: {shown}") from None
+        if isinstance(price, bool):
+            raise ValidationError(f"Invalid price: {price!r}")
         if isinstance(price, (int, float)):
             amount, currency = str(price), "USD"
         else:
@@ -144,8 +203,14 @@ class ExactAgenticCommerceScheme:
         ``DPoP`` header proving possession of that key, for this request's method
         and URL, over this payment token. The token's signature is verified
         afterwards by the facilitator, so a token whose binding was altered fails
-        there.
+        there. The token is unverified here, so the nonce store is not touched
+        until ``after_verify``.
+
+        With a nonce store, the transport context must support weak references
+        (x402's does), or the payment is refused with ``dpop_invalid``.
         """
+        # Drop what an earlier request with the same transport context left.
+        self._pending_proofs.pop(context.transport_context)
         payment_token = (getattr(context.payment_payload, "payload", None) or {}).get(
             "paymentToken"
         )
@@ -168,17 +233,52 @@ class ExactAgenticCommerceScheme:
         try:
             if extract_dpop_thumbprint(proof) != cnf["jkt"]:
                 return AbortResult(reason="dpop_invalid")
-            verify_dpop_proof(
+            claims = verify_dpop_proof(
                 proof,
                 {
                     "htm": adapter.get_method().upper(),
                     "htu": adapter.get_url().split("?", 1)[0].split("#", 1)[0],
                     "access_token": payment_token,
                     "max_age": self._dpop_max_age_seconds,
-                    "nonce_store": self._dpop_nonce_store,
                 },
             )
         except DPoPError:
+            return AbortResult(reason="dpop_invalid")
+        if self._dpop_nonce_store is not None:
+            # The id is checked and recorded in after_verify, once the facilitator
+            # has accepted the token: a forged token never reaches the store.
+            pending = _PendingProof(
+                jti=claims["jti"],
+                expires_at=_replay_expires_at(int(claims["iat"]), self._dpop_max_age_seconds),
+            )
+            try:
+                self._pending_proofs.set(context.transport_context, pending)
+            except TypeError:
+                return AbortResult(reason="dpop_invalid")
+        return None
+
+    def after_verify(self, context: VerifyResultContext) -> AbortResult | None:
+        """Reject a replayed DPoP proof of a payment the facilitator accepted, and record its id.
+
+        ``has`` and ``add`` are called once each, so a store whose ``has`` records
+        the id (an atomic check-and-set) works. A store error refuses the payment
+        and is logged as a warning.
+        """
+        pending = self._pending_proofs.pop(context.transport_context)
+        if pending is None or not context.result.is_valid:
+            return None
+        # A proof that is stale, before or during the store lookup, is refused: the
+        # store may already have forgotten an earlier use of it.
+        if int(time.time()) >= pending.expires_at:
+            return AbortResult(reason="dpop_invalid")
+        store = cast(DPoPNonceStore, self._dpop_nonce_store)
+        try:
+            if store.has(pending.jti) or int(time.time()) >= pending.expires_at:
+                return AbortResult(reason="dpop_invalid")
+            store.add(pending.jti, pending.expires_at)
+        except Exception as exc:  # noqa: BLE001 - x402 core does not catch hook errors
+            # The type only: the message of a store error may name the proof id.
+            logger.warning("DPoP nonce store failed (%s); payment refused", type(exc).__name__)
             return AbortResult(reason="dpop_invalid")
         return None
 
