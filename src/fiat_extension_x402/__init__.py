@@ -59,8 +59,6 @@ from fiat_extension_x402.signers import (
 from fiat_extension_x402.utils import (
     decode_quote_token,
     parse_money_to_decimal,
-    verify_payment_token,
-    verify_quote_token,
 )
 
 __all__ = [
@@ -104,6 +102,4 @@ __all__ = [
     "secure_compare",
     "validate_url",
     "verify_dpop_proof",
-    "verify_payment_token",
-    "verify_quote_token",
 ]

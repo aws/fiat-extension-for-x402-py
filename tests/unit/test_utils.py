@@ -4,20 +4,11 @@
 
 from __future__ import annotations
 
-import time
-from unittest.mock import patch
-
 import jwt as pyjwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, generate_private_key
 
-from fiat_extension_x402.exceptions import ExpiryError, SignatureError, ValidationError
-from fiat_extension_x402.utils import (
-    decode_quote_token,
-    parse_money_to_decimal,
-    verify_payment_token,
-    verify_quote_token,
-)
+from fiat_extension_x402.exceptions import ValidationError
+from fiat_extension_x402.utils import decode_quote_token, parse_money_to_decimal
 
 
 class TestDecodeQuoteToken:
@@ -34,46 +25,6 @@ class TestDecodeQuoteToken:
     def test_invalid_token(self) -> None:
         with pytest.raises(ValidationError):
             decode_quote_token("invalid")
-
-
-class TestVerifyQuoteToken:
-    def test_valid(self) -> None:
-        key = generate_private_key(SECP256R1())
-        payload = {"iss": "test", "exp": int(time.time()) + 300}
-        token = pyjwt.encode(payload, key, algorithm="ES256")
-        claims = verify_quote_token(token, key.public_key())
-        assert claims["iss"] == "test"
-
-    def test_expired(self) -> None:
-        key = generate_private_key(SECP256R1())
-        payload = {"iss": "test", "exp": int(time.time()) - 100}
-        token = pyjwt.encode(payload, key, algorithm="ES256")
-        with pytest.raises(ExpiryError):
-            verify_quote_token(token, key.public_key())
-
-    def test_bad_signature(self) -> None:
-        key1 = generate_private_key(SECP256R1())
-        key2 = generate_private_key(SECP256R1())
-        payload = {"iss": "test", "exp": int(time.time()) + 300}
-        token = pyjwt.encode(payload, key1, algorithm="ES256")
-        with pytest.raises(SignatureError):
-            verify_quote_token(token, key2.public_key())
-
-
-class TestVerifyPaymentToken:
-    def test_valid(self) -> None:
-        key = generate_private_key(SECP256R1())
-        payload = {"iss": "payment-service", "exp": int(time.time()) + 300}
-        token = pyjwt.encode(payload, key, algorithm="ES256")
-        claims = verify_payment_token(token, key.public_key())
-        assert claims["iss"] == "payment-service"
-
-    def test_expired(self) -> None:
-        key = generate_private_key(SECP256R1())
-        payload = {"iss": "test", "exp": int(time.time()) - 100}
-        token = pyjwt.encode(payload, key, algorithm="ES256")
-        with pytest.raises(ExpiryError):
-            verify_payment_token(token, key.public_key())
 
 
 class TestParseMoneyToDecimal:
@@ -96,42 +47,6 @@ class TestParseMoneyToDecimal:
 
 class TestUtilsAdditional:
     """Cover remaining paths in utils.py."""
-
-    def test_verify_quote_token_invalid_signature(self) -> None:
-        """A bad signature raises SignatureError (line 53-54)."""
-        key1 = generate_private_key(SECP256R1())
-        key2 = generate_private_key(SECP256R1())
-        token = pyjwt.encode({"iss": "test"}, key1, algorithm="ES256")
-        with pytest.raises(SignatureError, match="signature invalid"):
-            verify_quote_token(token, key2.public_key())
-
-    def test_verify_quote_token_generic_pyjwt_error(self) -> None:
-        """A non-signature PyJWTError (e.g. DecodeError) raises SignatureError (line 55-56)."""
-        key = generate_private_key(SECP256R1())
-        token = pyjwt.encode({"iss": "test"}, key, algorithm="ES256")
-        with (
-            patch("fiat_extension_x402.utils.pyjwt.decode", side_effect=pyjwt.DecodeError("boom")),
-            pytest.raises(SignatureError, match="verification failed"),
-        ):
-            verify_quote_token(token, key.public_key())
-
-    def test_verify_payment_token_invalid_signature(self) -> None:
-        """A bad signature raises SignatureError (line 85-86)."""
-        key1 = generate_private_key(SECP256R1())
-        key2 = generate_private_key(SECP256R1())
-        token = pyjwt.encode({"iss": "payment-service"}, key1, algorithm="ES256")
-        with pytest.raises(SignatureError, match="signature invalid"):
-            verify_payment_token(token, key2.public_key())
-
-    def test_verify_payment_token_generic_pyjwt_error(self) -> None:
-        """A non-signature PyJWTError (e.g. DecodeError) raises SignatureError (line 87-88)."""
-        key = generate_private_key(SECP256R1())
-        token = pyjwt.encode({"iss": "payment-service"}, key, algorithm="ES256")
-        with (
-            patch("fiat_extension_x402.utils.pyjwt.decode", side_effect=pyjwt.DecodeError("boom")),
-            pytest.raises(SignatureError, match="verification failed"),
-        ):
-            verify_payment_token(token, key.public_key())
 
     def test_parse_money_bare_numeric_string(self) -> None:
         """parse_money_to_decimal handles bare numeric string."""
@@ -195,47 +110,11 @@ class TestDecodeQuoteTokenMessage:
             decode_quote_token("")
 
 
-class TestVerifyQuoteTokenInvalidSignature:
-    """Cover the InvalidSignatureError path (line 53-54 of utils.py)."""
+@pytest.mark.parametrize("name", ["verify_payment_token", "verify_quote_token"])
+def test_partial_token_verifiers_are_not_public(name: str) -> None:
+    """Only AgenticCommerceVerifier verifies tokens: these checked signatures alone."""
+    import fiat_extension_x402
+    from fiat_extension_x402 import utils
 
-    def test_invalid_signature_raises_signature_error(self) -> None:
-        key1 = generate_private_key(SECP256R1())
-        key2 = generate_private_key(SECP256R1())
-        payload = {"iss": "test", "exp": int(time.time()) + 300}
-        token = pyjwt.encode(payload, key1, algorithm="ES256")
-        # Verify with wrong key — should hit InvalidSignatureError specifically
-        with pytest.raises(SignatureError, match="signature invalid"):
-            verify_quote_token(token, key2.public_key())
-
-
-class TestVerifyPaymentTokenInvalidSignature:
-    """Cover the InvalidSignatureError path (line 85-86 of utils.py)."""
-
-    def test_invalid_signature_raises_signature_error(self) -> None:
-        key1 = generate_private_key(SECP256R1())
-        key2 = generate_private_key(SECP256R1())
-        payload = {"iss": "test", "exp": int(time.time()) + 300}
-        token = pyjwt.encode(payload, key1, algorithm="ES256")
-        with pytest.raises(SignatureError, match="signature invalid"):
-            verify_payment_token(token, key2.public_key())
-
-
-class TestTokensWithoutExpiry:
-    """Tokens without an ``exp`` claim are accepted (expiry is optional here)."""
-
-    def test_quote_token_without_exp(self) -> None:
-        key = generate_private_key(SECP256R1())
-        token = pyjwt.encode({"iss": "test"}, key, algorithm="ES256")
-        assert verify_quote_token(token, key.public_key()) == {"iss": "test"}
-
-    def test_payment_token_without_exp(self) -> None:
-        key = generate_private_key(SECP256R1())
-        token = pyjwt.encode({"iss": "test"}, key, algorithm="ES256")
-        assert verify_payment_token(token, key.public_key()) == {"iss": "test"}
-
-    def test_hs256_token_is_rejected(self) -> None:
-        token = pyjwt.encode(
-            {"iss": "test"}, "a-shared-secret-that-is-at-least-32-bytes", algorithm="HS256"
-        )
-        with pytest.raises(SignatureError, match="verification failed"):
-            verify_quote_token(token, "a-shared-secret-that-is-at-least-32-bytes")
+    assert not hasattr(utils, name)
+    assert not hasattr(fiat_extension_x402, name)

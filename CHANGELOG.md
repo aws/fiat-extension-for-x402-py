@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. The project follows
 [semantic versioning](https://semver.org).
 
+## Unreleased
+
+### Breaking changes
+
+- `verify_payment_token` and `verify_quote_token` are removed. They checked a
+  token's signature but not its issuer, audience or quote, and accepted tokens
+  without an expiry. Verify payments with `AgenticCommerceVerifier`.
+
 ## 1.0.0
 
 Initial release: the seller and facilitator roles of AWS Marketplace Agentic
