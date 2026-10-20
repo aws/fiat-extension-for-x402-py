@@ -10,6 +10,23 @@ All notable changes to this project are documented here. The project follows
 - `verify_payment_token` and `verify_quote_token` are removed. They checked a
   token's signature but not its issuer, audience or quote, and accepted tokens
   without an expiry. Verify payments with `AgenticCommerceVerifier`.
+- `AgenticCommerceVerifier` refuses a payment token without a `kid` or a
+  `payment_id`.
+
+### Security
+
+- `AgenticCommerceVerifier` checks a payment token's algorithm, key id, issuer,
+  expiry and quote before fetching the payment service's JWKS, so a forged or
+  stale token costs no network call. The JWKS is cached for 60 seconds, a token
+  naming an unknown key refetches it at most every 30 seconds, concurrent
+  verifications share one fetch, and JWKS responses over 64 KiB are refused.
+- The `exact` facilitator scheme requires the paid quote to match the route's
+  current quote on `iss`, `aud`, `payTo`, `settlement` and `reference`, so a
+  quote for another route, product or service sharing the signing key is
+  refused. `AgenticCommerceVerifier.verify` takes the route's quote as
+  `route_quote_token`.
+- `docs/security.md` documents that verification is stateless and that sellers
+  must record each `payment_id` to accept a payment once.
 
 ## 1.0.0
 
