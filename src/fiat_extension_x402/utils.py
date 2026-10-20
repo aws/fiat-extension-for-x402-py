@@ -5,18 +5,17 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 import jwt as pyjwt
 
-from fiat_extension_x402.exceptions import ValidationError
+from fiat_extension_x402.exceptions import ExpiryError, SignatureError, ValidationError
+from fiat_extension_x402.security import ALLOWED_ALGORITHMS
 
 
 def decode_quote_token(token: str) -> dict[str, Any]:
     """Decode a quote token JWT without signature verification.
-
-    For inspection only: the claims are not trusted. Verify payments with
-    :class:`~fiat_extension_x402.AgenticCommerceVerifier`.
 
     :param token: Quote token JWT string.
     :returns: Decoded claims dict.
@@ -27,6 +26,66 @@ def decode_quote_token(token: str) -> dict[str, Any]:
         return claims
     except Exception as exc:
         raise ValidationError(f"Invalid quote token format: {exc}") from exc
+
+
+def verify_quote_token(token: str, public_key: Any) -> dict[str, Any]:
+    """Verify a quote token JWT signature and expiry.
+
+    :param token: Quote token JWT string.
+    :param public_key: Public key for verification (PyJWT-compatible).
+    :returns: Verified claims dict.
+    :raises SignatureError: if signature verification fails.
+    :raises ExpiryError: if the token has expired.
+    """
+    try:
+        claims: dict[str, Any] = pyjwt.decode(
+            token,
+            public_key,
+            algorithms=ALLOWED_ALGORITHMS,
+            options={"verify_exp": False, "verify_aud": False},
+        )
+    except pyjwt.InvalidSignatureError as exc:
+        raise SignatureError(f"Quote token signature invalid: {exc}", "quote") from exc
+    except pyjwt.PyJWTError as exc:
+        raise SignatureError(f"Quote token verification failed: {exc}", "quote") from exc
+
+    exp = claims.get("exp")
+    if exp is not None:
+        now = int(time.time())
+        if exp < now:
+            raise ExpiryError("Quote token expired", exp, now)
+
+    return claims
+
+
+def verify_payment_token(token: str, public_key: Any) -> dict[str, Any]:
+    """Verify a payment token JWT signature and expiry.
+
+    :param token: Payment token JWT string.
+    :param public_key: Public key for verification (PyJWT-compatible).
+    :returns: Verified claims dict.
+    :raises SignatureError: if signature verification fails.
+    :raises ExpiryError: if the token has expired.
+    """
+    try:
+        claims: dict[str, Any] = pyjwt.decode(
+            token,
+            public_key,
+            algorithms=ALLOWED_ALGORITHMS,
+            options={"verify_exp": False, "verify_aud": False},
+        )
+    except pyjwt.InvalidSignatureError as exc:
+        raise SignatureError(f"Payment token signature invalid: {exc}", "payment") from exc
+    except pyjwt.PyJWTError as exc:
+        raise SignatureError(f"Payment token verification failed: {exc}", "payment") from exc
+
+    exp = claims.get("exp")
+    if exp is not None:
+        now = int(time.time())
+        if exp < now:
+            raise ExpiryError("Payment token expired", exp, now)
+
+    return claims
 
 
 # Matches "$1.50", "1.50 USD", "1.50" — a non-negative decimal in ASCII digits with
@@ -59,4 +118,6 @@ def parse_money_to_decimal(money: str | float) -> dict[str, Any]:
 __all__ = [
     "decode_quote_token",
     "parse_money_to_decimal",
+    "verify_payment_token",
+    "verify_quote_token",
 ]

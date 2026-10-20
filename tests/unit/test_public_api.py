@@ -51,6 +51,8 @@ EXPECTED_EXPORTS = {
     "secure_compare",
     "validate_url",
     "verify_dpop_proof",
+    "verify_payment_token",
+    "verify_quote_token",
 }
 
 SUBMODULES = [
