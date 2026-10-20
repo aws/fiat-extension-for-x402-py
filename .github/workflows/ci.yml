@@ -46,7 +46,7 @@ jobs:
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         # "minimum" is the lowest x402 version pyproject.toml allows; "locked"
-        # is the version in uv.lock, kept current by Dependabot.
+        # is the version in uv.lock.
         x402: [minimum, locked]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
