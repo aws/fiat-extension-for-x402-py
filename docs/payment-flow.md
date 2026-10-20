@@ -85,12 +85,20 @@ canceled (`after_verify_aborted`); nothing is settled.
 
 The facilitator (`AgenticCommerceVerifier`) checks that:
 
-1. the payment token is signed by the service (its JWKS) with an allowed algorithm;
-2. its `iss` is the service and it has not expired;
-3. its `quote_token` equals the quote in `accepted`;
-4. the quote is signed by the seller's configured key;
-5. the payment token's `aud` is the quote's `iss`, and the quote has not expired;
-6. the quote's price equals the route's amount and currency.
+1. before any network call: the payment token uses an allowed algorithm and
+   names a key (`kid`), its `iss` is the service, it has not expired, and its
+   `quote_token` equals the quote in `accepted`;
+2. the payment token is signed by the service (its JWKS, cached for 60 seconds)
+   and carries a `payment_id`;
+3. the quote is signed by the seller's configured key;
+4. the payment token's `aud` is the quote's `iss`, and the quote has not expired;
+5. the quote's price equals the route's amount and currency, and its `iss`,
+   `aud`, `payTo`, `settlement` and `reference` equal those of the route's
+   current quote.
 
 Failures return `invalid_payment`, `payment_expired`, `invalid_quote` or
 `quote_expired`; DPoP failures abort with `dpop_required` or `dpop_invalid`.
+
+Settling is a no-op and nothing records the payment, so the same payment is
+accepted again until it expires. The seller records each `payment_id` to accept
+it once; see [security.md](security.md#payment-replay).
