@@ -1,0 +1,5 @@
+# Test fixtures in the first commit (since removed): AWS's documented example
+# credentials and placeholder tokens, not real secrets.
+08b654bd41356f251e9eb15a4a1d335a1bf48050:tests/unit/auth/test_aws_sigv4.py:generic-api-key:26
+08b654bd41356f251e9eb15a4a1d335a1bf48050:tests/unit/test_client.py:generic-api-key:32
+08b654bd41356f251e9eb15a4a1d335a1bf48050:tests/unit/test_client.py:generic-api-key:37
