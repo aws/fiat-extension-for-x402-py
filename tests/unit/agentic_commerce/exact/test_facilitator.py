@@ -245,3 +245,30 @@ class TestSettle:
             SimpleNamespace(network="aws:base"),  # type: ignore[arg-type]
         )
         assert result.transaction == ""
+
+
+class TestRouteBinding:
+    def test_quote_for_another_product_is_refused(
+        self,
+        service: FakePaymentService,
+        signer: LocalQuoteSigner,
+        scheme: ExactAgenticCommerceFacilitatorScheme,
+    ) -> None:
+        """A quote paid for product A, at the same price, does not buy route B."""
+        route = _offer(signer)
+        other = PaymentRequirements(
+            scheme="exact",
+            network="aws:base",
+            asset="iso4217:USD",
+            amount="0.10",
+            pay_to="seller-2",
+            max_timeout_seconds=300,
+        )
+        accepted = ExactAgenticCommerceServerScheme(signer=signer).enhance_payment_requirements(
+            other
+        )
+        token = service.issue(_quote(accepted))
+        result = scheme.verify(_payload(accepted, {"paymentToken": token}), route)
+        assert result.is_valid is False
+        assert result.invalid_reason == "invalid_quote"
+        assert result.invalid_message == "Quote does not match this route"

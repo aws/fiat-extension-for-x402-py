@@ -25,7 +25,7 @@ jobs:
   # pull request's checks tested.
   ci:
     name: CI
-    uses: $/.github/workflows/ci.yml
+    uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 

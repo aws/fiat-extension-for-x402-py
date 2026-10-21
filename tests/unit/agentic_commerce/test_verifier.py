@@ -179,13 +179,19 @@ class TestVerifySuccess:
         )
         assert verifier.verify(token, requirements).is_valid is True
 
-    def test_token_without_kid_uses_first_key(self, service: FakePaymentService) -> None:
+    def test_token_without_kid_is_refused(self, mock_router: respx.MockRouter) -> None:
+        service = FakePaymentService()
+        route = mock_router.get(SERVICE_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=service.jwks)
+        )
         signer = seller_signer()
         requirements = _requirements(signer)
         token = _service_token(
             service, _payment_claims(requirements["extra"]["quoteToken"]), headers={}
         )
-        assert _static(signer).verify(token, requirements).is_valid is True
+        result = _static(signer).verify(token, requirements)
+        _assert_invalid(result, "invalid_payment", "Payment token names no key (kid)")
+        assert route.call_count == 0
 
     def test_kid_selects_matching_key(self, mock_router: respx.MockRouter) -> None:
         service = FakePaymentService()
@@ -274,48 +280,45 @@ class TestPaymentTokenSignature:
         result = _static(signer).verify(token, requirements)
         _assert_invalid(result, "invalid_payment", "Algorithm not allowed: HS256")
 
-    def test_service_jwks_fetched_on_every_verification(
-        self, mock_router: respx.MockRouter
-    ) -> None:
-        service = FakePaymentService()
-        route = mock_router.get(SERVICE_JWKS_URL).mock(
-            return_value=httpx.Response(200, json=service.jwks)
-        )
+    def test_missing_payment_id(self, service: FakePaymentService) -> None:
         signer = seller_signer()
-        verifier = _static(signer)
-        for _ in range(2):
-            requirements = _requirements(signer)
-            verifier.verify(service.issue(requirements["extra"]["quoteToken"]), requirements)
-        assert route.call_count == 2
+        requirements = _requirements(signer)
+        claims = _payment_claims(requirements["extra"]["quoteToken"])
+        del claims["payment_id"]
+        result = _static(signer).verify(_service_token(service, claims), requirements)
+        _assert_invalid(result, "invalid_payment", "Missing payment_id in payment token")
+
+    def test_non_string_payment_id(self, service: FakePaymentService) -> None:
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        claims = _payment_claims(requirements["extra"]["quoteToken"], payment_id=7)
+        result = _static(signer).verify(_service_token(service, claims), requirements)
+        _assert_invalid(result, "invalid_payment", "Missing payment_id in payment token")
 
 
 class TestKeyImportErrors:
     """A key that cannot be imported is named by its kid; its members never reach the message."""
 
-    def test_payment_key_without_string_kid(self, mock_router: respx.MockRouter) -> None:
-        service = FakePaymentService()
+    def test_key_without_string_kid(self, service: FakePaymentService) -> None:
+        key, _ = ec_key("unused")
+        quote = jwt.encode(_quote_claims(), key, algorithm="ES256")
         bad_key = {"kid": 7, "d": "private-d-value"}
-        mock_router.get(SERVICE_JWKS_URL).mock(
-            return_value=httpx.Response(200, json={"keys": [bad_key]})
-        )
-        token = _service_token(service, _payment_claims("quote"), headers={})
-        result = _static(seller_signer()).verify(token, _raw_requirements("quote"))
-        _assert_invalid(result, "invalid_payment", "")
-        assert result.invalid_message == (
-            "Payment token signature invalid: JWK: invalid key material"
-        )
+        verifier = _verifier(StaticSellerKeyResolver(bad_key))
+        result = verifier.verify(service.issue(quote), _raw_requirements(quote))
+        _assert_invalid(result, "invalid_quote", "")
+        assert result.invalid_message == "Quote token signature invalid: JWK: invalid key material"
 
     def test_unimportable_key_is_skipped_for_the_next_one(
         self, mock_router: respx.MockRouter
     ) -> None:
         service = FakePaymentService()
+        unimportable = {"kid": service.jwk["kid"], "d": "x"}
         mock_router.get(SERVICE_JWKS_URL).mock(
-            return_value=httpx.Response(200, json={"keys": [{"d": "x"}, service.jwk]})
+            return_value=httpx.Response(200, json={"keys": [unimportable, service.jwk]})
         )
         signer = seller_signer()
         requirements = _requirements(signer)
-        quote_token = requirements["extra"]["quoteToken"]
-        token = _service_token(service, _payment_claims(quote_token), headers={})
+        token = service.issue(requirements["extra"]["quoteToken"])
         assert _static(signer).verify(token, requirements).is_valid is True
 
     def test_seller_key_with_private_members_and_unknown_alg(
@@ -782,3 +785,222 @@ class TestSellerOwnKeyWithJwks:
 
         result = _verifier(JwksSellerKeyResolver(SELLER_URL)).verify(token, requirements)
         _assert_invalid(result, "invalid_quote", "No matching key found in JWKS")
+
+
+class TestChecksBeforeFetch:
+    """A forged, stale or misdirected token is refused without fetching the JWKS."""
+
+    @pytest.fixture
+    def route(self, mock_router: respx.MockRouter) -> respx.Route:
+        return mock_router.get(SERVICE_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=FakePaymentService().jwks)
+        )
+
+    def test_garbage_token(self, route: respx.Route) -> None:
+        signer = seller_signer()
+        result = _static(signer).verify("not-a-jwt", _requirements(signer))
+        _assert_invalid(result, "invalid_payment", "Payment token signature invalid")
+        assert route.call_count == 0
+
+    def test_disallowed_algorithm(self, route: respx.Route) -> None:
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        token = jwt.encode(
+            _payment_claims(requirements["extra"]["quoteToken"]),
+            HMAC_SECRET,
+            algorithm="HS256",
+            headers={"kid": "service-key"},
+        )
+        result = _static(signer).verify(token, requirements)
+        _assert_invalid(result, "invalid_payment", "Algorithm not allowed: HS256")
+        assert route.call_count == 0
+
+    def test_wrong_issuer(self, route: respx.Route) -> None:
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        token = FakePaymentService().issue(
+            requirements["extra"]["quoteToken"], issuer="someone-else.test"
+        )
+        result = _static(signer).verify(token, requirements)
+        _assert_invalid(
+            result, "invalid_payment", "Payment token issuer is not the payment service"
+        )
+        assert route.call_count == 0
+
+    def test_expired(self, route: respx.Route) -> None:
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        token = FakePaymentService().issue(requirements["extra"]["quoteToken"], expires_in=-10)
+        result = _static(signer).verify(token, requirements)
+        _assert_invalid(result, "payment_expired", "Payment token expired")
+        assert route.call_count == 0
+
+    def test_issued_for_another_quote(self, route: respx.Route) -> None:
+        signer = seller_signer()
+        token = FakePaymentService().issue(_requirements(signer)["extra"]["quoteToken"])
+        result = _static(signer).verify(token, _requirements(signer))
+        _assert_invalid(result, "invalid_quote", "Payment token was issued for a different quote")
+        assert route.call_count == 0
+
+
+class TestServiceJwksCache:
+    @staticmethod
+    def _long_lived(signer: QuoteSigner, service: FakePaymentService) -> tuple[str, dict[str, Any]]:
+        """A payment that outlives the clock jumps below."""
+        requirements = _requirements(signer, maxTimeoutSeconds=10_000)
+        return service.issue(requirements["extra"]["quoteToken"], expires_in=10_000), requirements
+
+    @staticmethod
+    def _advance(monkeypatch: pytest.MonkeyPatch, seconds: float) -> None:
+        now = time.time() + seconds
+        monkeypatch.setattr(verifier_module, "time", SimpleNamespace(time=lambda: now))
+
+    def test_cached_between_verifications(self, mock_router: respx.MockRouter) -> None:
+        service = FakePaymentService()
+        route = mock_router.get(SERVICE_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=service.jwks)
+        )
+        signer = seller_signer()
+        verifier = _static(signer)
+        for _ in range(3):
+            requirements = _requirements(signer)
+            token = service.issue(requirements["extra"]["quoteToken"])
+            assert verifier.verify(token, requirements).is_valid is True
+        assert route.call_count == 1
+
+    def test_refetched_after_a_minute(
+        self, mock_router: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = FakePaymentService()
+        route = mock_router.get(SERVICE_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=service.jwks)
+        )
+        signer = seller_signer()
+        verifier = _static(signer)
+        token, requirements = self._long_lived(signer, service)
+        assert verifier.verify(token, requirements).is_valid is True
+        self._advance(monkeypatch, 61)
+        assert verifier.verify(token, requirements).is_valid is True
+        assert route.call_count == 2
+
+    def test_unknown_kid_refetches_at_most_every_30_seconds(
+        self, mock_router: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = FakePaymentService()
+        rotated = FakePaymentService()
+        rotated.jwk["kid"] = "rotated-key"
+        route = mock_router.get(SERVICE_JWKS_URL).mock(
+            side_effect=[
+                httpx.Response(200, json=service.jwks),
+                httpx.Response(200, json={"keys": [service.jwk, rotated.jwk]}),
+            ]
+        )
+        signer = seller_signer()
+        verifier = _static(signer)
+        token, requirements = self._long_lived(signer, service)
+        assert verifier.verify(token, requirements).is_valid is True
+
+        new_token, new_requirements = self._long_lived(signer, rotated)
+        result = verifier.verify(new_token, new_requirements)
+        _assert_invalid(result, "invalid_payment", "No matching key found in JWKS")
+        assert route.call_count == 1  # throttled: fetched less than 30 seconds ago
+
+        self._advance(monkeypatch, 31)
+        assert verifier.verify(new_token, new_requirements).is_valid is True
+        assert route.call_count == 2
+
+    def test_failed_fetch_is_not_retried_for_30_seconds(
+        self, mock_router: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = FakePaymentService()
+        route = mock_router.get(SERVICE_JWKS_URL).mock(
+            side_effect=[httpx.Response(503), httpx.Response(200, json=service.jwks)]
+        )
+        signer = seller_signer()
+        verifier = _static(signer)
+        token, requirements = self._long_lived(signer, service)
+        _assert_invalid(verifier.verify(token, requirements), "invalid_payment", "HTTP 503")
+        _assert_invalid(verifier.verify(token, requirements), "invalid_payment", "JWKS unavailable")
+        assert route.call_count == 1
+
+        self._advance(monkeypatch, 31)
+        assert verifier.verify(token, requirements).is_valid is True
+        assert route.call_count == 2
+
+    def test_oversized_jwks_is_refused(self, mock_router: respx.MockRouter) -> None:
+        mock_router.get(SERVICE_JWKS_URL).mock(
+            return_value=httpx.Response(200, content=b"{" + b" " * (64 * 1024) + b"}")
+        )
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        token = FakePaymentService().issue(requirements["extra"]["quoteToken"])
+        result = _static(signer).verify(token, requirements)
+        _assert_invalid(result, "invalid_payment", "exceeds 65536 bytes")
+
+    def test_non_object_jwks_is_refused(self, mock_router: respx.MockRouter) -> None:
+        mock_router.get(SERVICE_JWKS_URL).mock(return_value=httpx.Response(200, json=[]))
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        token = FakePaymentService().issue(requirements["extra"]["quoteToken"])
+        result = _static(signer).verify(token, requirements)
+        _assert_invalid(result, "invalid_payment", "is not a JSON object")
+
+    def test_jwks_without_key_list_lacks_every_kid(self, mock_router: respx.MockRouter) -> None:
+        route = mock_router.get(SERVICE_JWKS_URL).mock(
+            return_value=httpx.Response(200, json={"keys": "none"})
+        )
+        signer = seller_signer()
+        verifier = _static(signer)
+        for _ in range(2):
+            requirements = _requirements(signer)
+            token = FakePaymentService().issue(requirements["extra"]["quoteToken"])
+            _assert_invalid(verifier.verify(token, requirements), "invalid_payment", "")
+        assert route.call_count == 1
+
+
+class TestRouteQuote:
+    """The paid quote must be for the route it is presented on."""
+
+    def test_same_route_is_valid(self, service: FakePaymentService) -> None:
+        signer = seller_signer()
+        paid = _requirements(signer)
+        route_quote = _requirements(signer)["extra"]["quoteToken"]
+        token = service.issue(paid["extra"]["quoteToken"])
+        result = _static(signer).verify(token, paid, route_quote_token=route_quote)
+        assert result.is_valid is True
+
+    def test_another_product(self, service: FakePaymentService) -> None:
+        signer = seller_signer()
+        paid = _requirements(signer, payTo="seller-2")
+        route_quote = _requirements(signer)["extra"]["quoteToken"]
+        token = service.issue(paid["extra"]["quoteToken"])
+        result = _static(signer).verify(token, paid, route_quote_token=route_quote)
+        _assert_invalid(result, "invalid_quote", "Quote does not match this route")
+
+    def test_another_issuer_sharing_the_key(self, service: FakePaymentService) -> None:
+        key, jwk = ec_key("seller-key")
+        signer = LocalQuoteSigner(key, jwk, SELLER_URL)
+        other_service = LocalQuoteSigner(key, jwk, "https://other-service.example.com")
+        paid = _requirements(other_service)
+        route_quote = _requirements(signer)["extra"]["quoteToken"]
+        token = service.issue(
+            paid["extra"]["quoteToken"], audience="https://other-service.example.com"
+        )
+        result = _static(signer).verify(token, paid, route_quote_token=route_quote)
+        _assert_invalid(result, "invalid_quote", "Quote does not match this route")
+
+    def test_another_audience(self, service: FakePaymentService) -> None:
+        signer = seller_signer()
+        quote = signer.sign_quote(_quote_claims(aud="another-audience"))
+        route_quote = signer.sign_quote(_quote_claims())
+        result = _static(signer).verify(
+            service.issue(quote), _raw_requirements(quote), route_quote_token=route_quote
+        )
+        _assert_invalid(result, "invalid_quote", "Quote does not match this route")
+
+    def test_malformed_route_quote(self, service: FakePaymentService) -> None:
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        token = service.issue(requirements["extra"]["quoteToken"])
+        result = _static(signer).verify(token, requirements, route_quote_token="not-a-jwt")
+        _assert_invalid(result, "invalid_quote", "Route quote token is malformed")

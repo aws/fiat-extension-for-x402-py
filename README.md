@@ -278,6 +278,9 @@ always configured, never discovered from the token:
 - `payment_token_jwks_url`: base URL of the service's signing keys (defaults to production).
 - `jwks_request_headers`: extra headers for that request.
 
+The service's keys are cached for 60 seconds. The verifier keeps no record of
+accepted payments; see [Payment replay](docs/security.md#payment-replay).
+
 ### DPoP
 
 When a payment token is bound to a key (`cnf.jkt`), the request must carry a
@@ -320,9 +323,9 @@ A rejected payment gets another `402`. The reason is in the response's
 
 | Reason | Meaning |
 |---|---|
-| `invalid_payment` | The payment token is not signed by the service, its issuer or audience is wrong, or the amount or currency differs from the route |
+| `invalid_payment` | The payment token is not signed by the service, has no key id or `payment_id`, its issuer or audience is wrong, or the amount or currency differs from the route |
 | `payment_expired` | The payment token has expired |
-| `invalid_quote` | The quote is missing, is not the one the payment token was issued for, or is not signed by the seller's configured key |
+| `invalid_quote` | The quote is missing, is not the one the payment token was issued for, is not signed by the seller's configured key, or is for another route, product or service |
 | `quote_expired` | The quote has expired |
 | `dpop_required` | The payment token is bound to a key but the request has no valid `DPoP` header |
 | `dpop_invalid` | The `DPoP` proof does not match the key, method, URL or token, is too old, or was replayed |
@@ -356,7 +359,10 @@ uv run mypy --strict src tests
 
 ## Security
 
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+Verification is stateless: a payment is accepted again until it expires unless
+the seller records each `payment_id` in a store shared by all its instances.
+Read [docs/security.md](docs/security.md) before going to production. To report
+a vulnerability, see [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications).
 
 ## License
 

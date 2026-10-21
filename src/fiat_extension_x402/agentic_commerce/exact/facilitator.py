@@ -74,7 +74,11 @@ class ExactAgenticCommerceScheme:
                 invalid_reason="invalid_payment",
                 invalid_message="Missing paymentToken in payment payload",
             )
-        result = self._verifier.verify(payment_token, _wire_requirements(payload, requirements))
+        result = self._verifier.verify(
+            payment_token,
+            _wire_requirements(payload, requirements),
+            route_quote_token=_route_quote_token(requirements),
+        )
         return VerifyResponse(
             is_valid=result.is_valid,
             invalid_reason=result.invalid_reason,
@@ -92,6 +96,10 @@ class ExactAgenticCommerceScheme:
 
         The service captures the payment when it issues the payment token, so
         there is nothing to settle. The payment id is returned as the transaction.
+
+        Nothing records the payment here, so the same payment settles again
+        until it expires. A seller accepts each payment once by recording its
+        ``transaction`` (the payment id); see ``docs/security.md``.
         """
         payment_token = (payload.payload or {}).get("paymentToken") or ""
         try:
@@ -124,6 +132,16 @@ def _wire_requirements(payload: _AnyPayload, requirements: _AnyRequirements) -> 
     quote_source = accepted if accepted is not None else requirements
     quote_token = (getattr(quote_source, "extra", None) or {}).get("quoteToken")
     return {"amount": amount, "asset": requirements.asset, "extra": {"quoteToken": quote_token}}
+
+
+def _route_quote_token(requirements: _AnyRequirements) -> str | None:
+    """The quote the server signed for the route in these requirements.
+
+    The buyer's quote must be for the same route; see
+    :meth:`AgenticCommerceVerifier.verify`.
+    """
+    quote_token = (getattr(requirements, "extra", None) or {}).get("quoteToken")
+    return quote_token if isinstance(quote_token, str) and quote_token else None
 
 
 __all__ = ["ExactAgenticCommerceScheme"]
