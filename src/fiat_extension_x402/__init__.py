@@ -43,23 +43,17 @@ from fiat_extension_x402.dpop import (
 from fiat_extension_x402.exceptions import (
     AgenticCommerceError,
     DPoPError,
-    ExpiryError,
-    MismatchError,
-    SignatureError,
     SigningError,
     ValidationError,
 )
-from fiat_extension_x402.security import ALLOWED_ALGORITHMS, secure_compare, validate_url
+from fiat_extension_x402.security import ALLOWED_ALGORITHMS, secure_compare
 from fiat_extension_x402.signers import (
     KmsQuoteSigner,
     KmsQuoteSignerConfig,
     LocalQuoteSigner,
     QuoteSigner,
 )
-from fiat_extension_x402.utils import (
-    decode_quote_token,
-    parse_money_to_decimal,
-)
+from fiat_extension_x402.utils import decode_quote_token
 
 __all__ = [
     "AGENTIC_COMMERCE_CAIP_FAMILY",
@@ -76,16 +70,13 @@ __all__ = [
     "DPoPVerificationOptions",
     "ExactAgenticCommerceFacilitatorScheme",
     "ExactAgenticCommerceServerScheme",
-    "ExpiryError",
     "JwksSellerKeyResolver",
     "KmsQuoteSigner",
     "KmsQuoteSignerConfig",
     "KmsSellerKeyResolver",
     "LocalQuoteSigner",
-    "MismatchError",
     "QuoteSigner",
     "SellerKeyResolver",
-    "SignatureError",
     "SigningError",
     "StaticSellerKeyResolver",
     "ValidationError",
@@ -96,10 +87,8 @@ __all__ = [
     "enhance_payment_requirements",
     "extract_dpop_thumbprint",
     "jwks_document",
-    "parse_money_to_decimal",
     "register_exact_agentic_commerce_facilitator",
     "register_exact_agentic_commerce_server",
     "secure_compare",
-    "validate_url",
     "verify_dpop_proof",
 ]

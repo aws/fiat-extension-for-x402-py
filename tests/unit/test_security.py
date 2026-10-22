@@ -4,9 +4,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from fiat_extension_x402.security import ALLOWED_ALGORITHMS, secure_compare, validate_url
+from fiat_extension_x402.security import ALLOWED_ALGORITHMS, secure_compare
 
 
 class TestAllowedAlgorithms:
@@ -40,41 +38,3 @@ class TestSecureCompare:
         jwt3 = "eyJhbGciOiJFUzM4NCJ9.eyJpc3MiOiJhd3MtbWFya2V0cGxhY2UifQ.different"
         assert secure_compare(jwt1, jwt2) is True
         assert secure_compare(jwt1, jwt3) is False
-
-
-class TestValidateUrl:
-    def test_valid_https(self) -> None:
-        assert validate_url("https://example.com/path") == "https://example.com/path"
-
-    def test_http_disallowed(self) -> None:
-        with pytest.raises(ValueError, match="Insecure"):
-            validate_url("http://example.com")
-
-    def test_http_localhost_allowed(self) -> None:
-        # localhost is permitted over http without the allow_http flag.
-        assert validate_url("http://localhost:8080") == "http://localhost:8080"
-
-    def test_http_127_allowed(self) -> None:
-        assert validate_url("http://127.0.0.1:3000") == "http://127.0.0.1:3000"
-
-    def test_invalid_url(self) -> None:
-        with pytest.raises(ValueError, match="Invalid URL"):
-            validate_url("not-a-url")
-
-    def test_empty_url(self) -> None:
-        with pytest.raises(ValueError, match="Invalid URL"):
-            validate_url("")
-
-    def test_url_with_path(self) -> None:
-        assert validate_url("https://api.example.com/v1/payments") == (
-            "https://api.example.com/v1/payments"
-        )
-
-    def test_allow_http_any_host(self) -> None:
-        assert validate_url("http://pay.aws.amazon.com", allow_http=True) == (
-            "http://pay.aws.amazon.com"
-        )
-
-    def test_unsupported_scheme(self) -> None:
-        with pytest.raises(ValueError, match="Unsupported"):
-            validate_url("ftp://example.com")
