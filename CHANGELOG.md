@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The project follows
 
 ## Unreleased
 
+### Removed
+
+- `verify_payment_token` and `verify_quote_token`. They checked a token's
+  signature but not its issuer, audience or quote, and nothing in the SDK used
+  them. Verify payments with `AgenticCommerceVerifier`.
+- `SignatureError`, `ExpiryError` and `MismatchError`. Nothing in the SDK raises
+  them.
+- `validate_url` and `parse_money_to_decimal`. Nothing in the SDK used them;
+  route prices are parsed by the `exact` server scheme.
+
 ### Changed
 
 - `AgenticCommerceVerifier` refuses a payment token without a `kid` or a
