@@ -279,7 +279,8 @@ always configured, never discovered from the token:
 - `jwks_request_headers`: extra headers for that request.
 
 The service's keys are cached for 60 seconds. The verifier keeps no record of
-accepted payments; see [Payment replay](docs/security.md#payment-replay).
+accepted payments: record the `payment_id` claim of each verified payment token
+(never a buyer-sent `paymentId`); see [Payment replay](docs/security.md#payment-replay).
 
 ### DPoP
 
@@ -360,7 +361,9 @@ uv run mypy --strict src tests
 ## Security
 
 Verification is stateless: a payment is accepted again until it expires unless
-the seller records each `payment_id` in a store shared by all its instances.
+the seller records the `payment_id` claim of each verified payment token in a
+store shared by all its instances. Never key on a `paymentId` the buyer sends in
+the payment payload: the buyer sets it and nothing checks it.
 Read [docs/security.md](docs/security.md) before going to production. To report
 a vulnerability, see [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications).
 

@@ -100,5 +100,6 @@ Failures return `invalid_payment`, `payment_expired`, `invalid_quote` or
 `quote_expired`; DPoP failures abort with `dpop_required` or `dpop_invalid`.
 
 Settling is a no-op and nothing records the payment, so the same payment is
-accepted again until it expires. The seller records each `payment_id` to accept
-it once; see [security.md](security.md#payment-replay).
+accepted again until it expires. The seller records the `payment_id` claim of
+the verified payment token, not a buyer-sent `paymentId`, to accept it once; see
+[security.md](security.md#payment-replay).
