@@ -93,9 +93,10 @@ A payment token is accepted only when it is signed by the payment service, has
 the expected issuer, a key id and a `payment_id`, has not expired, embeds exactly
 the quote the buyer accepted, and that quote is signed by the seller's
 configured key, addressed to the seller (`aud`), unexpired, at the route's price
-and currency, and for the route: the `exact` facilitator scheme requires its
-`iss`, `aud`, `payTo` (the product ID), `settlement` and `reference` to equal
-those of the quote the seller signs for the route now. Every failure rejects
+and currency, for the route's scheme and network (when the quote names them),
+and for the route: the `exact` facilitator scheme requires its `iss`, `aud`,
+`payTo` (the product ID), `settlement`, `reference`, `scheme` and `network` to
+equal those of the quote the seller signs for the route now. Every failure rejects
 the payment; nothing fails open.
 
 - The token's algorithm, key id, issuer, expiry and quote are checked before

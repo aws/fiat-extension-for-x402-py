@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The project follows
 
 ## 1.0.1
 
+### Added
+
+- Quotes carry the route's `scheme` and `network` as claims, so the payment
+  service, which sees only the quote, can check what kind of payment the seller
+  priced. `AgenticCommerceVerifier` refuses a quote whose `scheme` or `network`
+  differs from the requirements' (`invalid_quote`, "Quote is for a different
+  scheme or network"); a quote without them is still accepted.
+
 ### Removed
 
 - `verify_payment_token` and `verify_quote_token`. They checked a token's

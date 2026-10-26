@@ -92,8 +92,9 @@ The facilitator (`AgenticCommerceVerifier`) checks that:
    and carries a `payment_id`;
 3. the quote is signed by the seller's configured key;
 4. the payment token's `aud` is the quote's `iss`, and the quote has not expired;
-5. the quote's price equals the route's amount and currency, and its `iss`,
-   `aud`, `payTo`, `settlement` and `reference` equal those of the route's
+5. the quote's price equals the route's amount and currency, its `scheme` and
+   `network`, when present, equal the route's, and its `iss`, `aud`, `payTo`,
+   `settlement`, `reference`, `scheme` and `network` equal those of the route's
    current quote.
 
 Failures return `invalid_payment`, `payment_expired`, `invalid_quote` or

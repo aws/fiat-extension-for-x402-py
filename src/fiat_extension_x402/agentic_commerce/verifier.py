@@ -48,7 +48,10 @@ _JWKS_FETCH_TIMEOUT_SECONDS = 10
 # Quote claims the buyer's quote must share with the route's current quote:
 # all but the per-quote iat, exp and jti, and the price, which is checked
 # against the requirements.
-_ROUTE_BOUND_QUOTE_CLAIMS = ("iss", "aud", "payTo", "settlement", "reference")
+_ROUTE_BOUND_QUOTE_CLAIMS = ("iss", "aud", "payTo", "settlement", "reference", "scheme", "network")
+# Quote claims that, when present, must equal the requirements' field of the
+# same name. A quote without them, from a signer that predates them, passes.
+_REQUIREMENT_QUOTE_CLAIMS = ("scheme", "network")
 
 
 @dataclass(frozen=True)
@@ -146,11 +149,13 @@ class AgenticCommerceVerifier:
 
         :param payment_token: The payment token JWT.
         :param requirements: The requirements the payment claims to satisfy, with
-            wire field names (``amount``, ``asset``, ``extra.quoteToken``).
+            wire field names (``amount``, ``asset``, ``extra.quoteToken``, and
+            optionally ``scheme`` and ``network``). A quote carrying ``scheme`` or
+            ``network`` must match them.
         :param route_quote_token: The quote the seller currently signs for the
             route (the server's own ``extra.quoteToken``). When given, the paid
-            quote must match it on ``iss``, ``aud``, ``payTo``, ``settlement``
-            and ``reference``, so a quote for another route, product or seller
+            quote must match it on ``iss``, ``aud``, ``payTo``, ``settlement``,
+            ``reference``, ``scheme`` and ``network``, so a quote for another route, product or seller
             sharing the signing key is refused. The ``exact`` facilitator scheme
             always passes it.
         :returns: The verification outcome. Never raises for an invalid payment.
@@ -200,6 +205,10 @@ class AgenticCommerceVerifier:
             or price.get("currency") != currency
         ):
             return _invalid("invalid_payment", "Amount or currency mismatch")
+
+        for name in _REQUIREMENT_QUOTE_CLAIMS:
+            if name in quote_claims and quote_claims[name] != requirements.get(name):
+                return _invalid("invalid_quote", "Quote is for a different scheme or network")
 
         if route_quote_token is not None:
             try:

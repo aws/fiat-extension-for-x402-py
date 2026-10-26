@@ -122,7 +122,8 @@ def _wire_requirements(payload: _AnyPayload, requirements: _AnyRequirements) -> 
     core matches those against the server's while ignoring the quote token
     (signed afresh for every 402), so the server's copy holds a newer quote than
     the one the buyer paid for. The quote is signed by the seller, which the
-    verifier checks. v1 payloads have no ``accepted`` and v1 requirements name
+    verifier checks. Scheme and network come from ``requirements`` too, for a
+    quote that carries them. v1 payloads have no ``accepted`` and v1 requirements name
     the amount ``maxAmountRequired``.
     """
     amount = getattr(requirements, "amount", None)
@@ -131,7 +132,14 @@ def _wire_requirements(payload: _AnyPayload, requirements: _AnyRequirements) -> 
     accepted = getattr(payload, "accepted", None)
     quote_source = accepted if accepted is not None else requirements
     quote_token = (getattr(quote_source, "extra", None) or {}).get("quoteToken")
-    return {"amount": amount, "asset": requirements.asset, "extra": {"quoteToken": quote_token}}
+    network = getattr(requirements, "network", None)
+    return {
+        "scheme": getattr(requirements, "scheme", None),
+        "network": None if network is None else str(network),
+        "amount": amount,
+        "asset": requirements.asset,
+        "extra": {"quoteToken": quote_token},
+    }
 
 
 def _route_quote_token(requirements: _AnyRequirements) -> str | None:

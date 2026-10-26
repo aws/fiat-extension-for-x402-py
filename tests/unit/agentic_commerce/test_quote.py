@@ -159,6 +159,27 @@ class TestQuoteClaims:
             assert name not in claims
 
 
+class TestSchemeAndNetwork:
+    def test_signed_from_the_requirements(self) -> None:
+        signer = seller_signer()
+        claims = _quote(signer, enhance_payment_requirements(_requirements(), signer))
+        assert claims["scheme"] == "exact"
+        assert claims["network"] == "aws:base"
+
+    def test_follow_the_requirements_not_a_constant(self) -> None:
+        signer = _RecordingSigner()
+        enhance_payment_requirements(_requirements(network="aws:other"), signer)
+        assert signer.signed[0]["network"] == "aws:other"
+
+    @pytest.mark.parametrize("value", [None, "", 42])
+    def test_absent_or_not_a_string_is_omitted(self, value: Any) -> None:
+        signer = _RecordingSigner()
+        requirements = _requirements(scheme=value)
+        enhance_payment_requirements(requirements, signer)
+        assert "scheme" not in signer.signed[0]
+        assert signer.signed[0]["network"] == "aws:base"
+
+
 class TestProductId:
     def test_settlement_product_id_is_pay_to(self) -> None:
         signer = _RecordingSigner()

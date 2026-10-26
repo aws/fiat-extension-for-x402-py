@@ -68,6 +68,10 @@ def _check_asset_amount(amount: object, asset: object) -> tuple[str, str]:
     return amount, asset
 
 
+# Requirement fields signed into the quote under the same name.
+_REQUIREMENT_QUOTE_CLAIMS = ("scheme", "network")
+
+
 def enhance_payment_requirements(
     payment_requirements: dict[str, Any],
     signer: QuoteSigner,
@@ -78,6 +82,10 @@ def enhance_payment_requirements(
     quote as ``payTo`` and as ``settlement.product_id``, which the payment service
     requires to settle the payment against the listing. Other ``settlement``
     fields can be supplied in ``extra.settlement``.
+
+    The requirements' ``scheme`` and ``network`` are signed into the quote as
+    claims of the same names, so the payment service, which sees only the quote,
+    can check what kind of payment the seller priced.
 
     The returned requirements carry the sentinel ``payTo`` and a
     ``maxTimeoutSeconds`` equal to the quote's validity: the signed quote is the
@@ -131,6 +139,10 @@ def enhance_payment_requirements(
         "reference": extra.get("reference") or "RESOURCE",
         "settlement": settlement,
     }
+    for name in _REQUIREMENT_QUOTE_CLAIMS:
+        value = payment_requirements.get(name)
+        if isinstance(value, str) and value:
+            claims[name] = value
     for name in _OPTIONAL_QUOTE_CLAIMS:
         if extra.get(name) is not None:
             claims[name] = extra[name]
