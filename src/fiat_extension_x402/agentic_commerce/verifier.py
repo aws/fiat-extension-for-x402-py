@@ -48,9 +48,16 @@ _JWKS_FETCH_TIMEOUT_SECONDS = 10
 # Quote claims the buyer's quote must share with the route's current quote:
 # all but the per-quote iat, exp and jti, and the price, which is checked
 # against the requirements.
-_ROUTE_BOUND_QUOTE_CLAIMS = ("iss", "aud", "payTo", "settlement", "reference", "scheme", "network")
-# Quote claims that, when present, must equal the requirements' field of the
-# same name. A quote without them, from a signer that predates them, passes.
+_ROUTE_BOUND_QUOTE_CLAIMS = (
+    "iss",
+    "aud",
+    "payTo",
+    "settlement",
+    "reference",
+    "scheme",
+    "network",
+)
+# Requirement fields every quote must carry, signed under the same name.
 _REQUIREMENT_QUOTE_CLAIMS = ("scheme", "network")
 
 
@@ -92,7 +99,8 @@ class AgenticCommerceVerifier:
        seller configures; it is never discovered from the token.
     4. Check the payment token's audience is the quote's issuer, and the quote
        has not expired.
-    5. Check the quote's price matches the requirements' amount and currency
+    5. Check the quote's price matches the requirements' amount and currency,
+       its ``scheme`` and ``network`` (both required) match the requirements',
        and, given the route's current quote, that the quote is for this route.
 
     Verification is stateless: a payment token is accepted again until it or
@@ -149,20 +157,24 @@ class AgenticCommerceVerifier:
 
         :param payment_token: The payment token JWT.
         :param requirements: The requirements the payment claims to satisfy, with
-            wire field names (``amount``, ``asset``, ``extra.quoteToken``, and
-            optionally ``scheme`` and ``network``). A quote carrying ``scheme`` or
-            ``network`` must match them.
+            wire field names (``scheme``, ``network``, ``amount``, ``asset`` and
+            ``extra.quoteToken``). The quote must carry the same ``scheme`` and
+            ``network``; requirements without them refuse every payment.
         :param route_quote_token: The quote the seller currently signs for the
             route (the server's own ``extra.quoteToken``). When given, the paid
             quote must match it on ``iss``, ``aud``, ``payTo``, ``settlement``,
-            ``reference``, ``scheme`` and ``network``, so a quote for another route, product or seller
-            sharing the signing key is refused. The ``exact`` facilitator scheme
-            always passes it.
+            ``reference``, ``scheme`` and ``network``, so a quote for another
+            route, product or seller sharing the signing key is refused. The
+            ``exact`` facilitator scheme always passes it, and refuses
+            requirements that carry no quote.
         :returns: The verification outcome. Never raises for an invalid payment.
         """
         expected_quote_token = (requirements.get("extra") or {}).get("quoteToken")
         if not expected_quote_token:
             return _invalid("invalid_quote", "Missing quoteToken in payment requirements")
+        for name in _REQUIREMENT_QUOTE_CLAIMS:
+            if not isinstance(requirements.get(name), str) or not requirements[name]:
+                return _invalid("invalid_quote", f"Missing {name} in payment requirements")
 
         # Cheap checks on the unverified token first, so a forged or stale token
         # is refused without a network call. The signature, verified next,
@@ -206,9 +218,8 @@ class AgenticCommerceVerifier:
         ):
             return _invalid("invalid_payment", "Amount or currency mismatch")
 
-        for name in _REQUIREMENT_QUOTE_CLAIMS:
-            if name in quote_claims and quote_claims[name] != requirements.get(name):
-                return _invalid("invalid_quote", "Quote is for a different scheme or network")
+        if any(quote_claims.get(name) != requirements[name] for name in _REQUIREMENT_QUOTE_CLAIMS):
+            return _invalid("invalid_quote", "Quote is for a different scheme or network")
 
         if route_quote_token is not None:
             try:

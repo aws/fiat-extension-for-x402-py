@@ -239,8 +239,9 @@ Set each route's `pay_to` to the seller's **AWS Marketplace product ID**. The
 server scheme signs it into the quote as `payTo` and as `settlement.product_id`,
 which the payment service requires to settle against the listing. On the wire,
 `payTo` is replaced by a placeholder; the signed quote carries the real value.
-The route's `scheme` and `network` are signed into the quote too, so the payment
-service, which sees only the quote, can check what kind of payment was priced.
+The route's `scheme` (`exact`) and `network` are signed into the quote too, and
+are required, so the payment service, which sees only the quote, can check what
+kind of payment was priced.
 
 Other quote details come from the route's `extra`:
 

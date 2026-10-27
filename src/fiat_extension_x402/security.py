@@ -17,7 +17,11 @@ def secure_compare(a: str, b: str) -> bool:
     :param b: Second string.
     :returns: ``True`` if the strings are equal, ``False`` otherwise.
     """
-    return hmac.compare_digest(a.encode(), b.encode())
+    # surrogatepass: a lone surrogate (from a JSON "\ud800" escape) compares
+    # as unequal instead of raising.
+    return hmac.compare_digest(
+        a.encode("utf-8", "surrogatepass"), b.encode("utf-8", "surrogatepass")
+    )
 
 
 __all__ = [
