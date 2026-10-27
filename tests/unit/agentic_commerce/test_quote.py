@@ -159,6 +159,35 @@ class TestQuoteClaims:
             assert name not in claims
 
 
+class TestSchemeAndNetwork:
+    def test_signed_from_the_requirements(self) -> None:
+        signer = seller_signer()
+        claims = _quote(signer, enhance_payment_requirements(_requirements(), signer))
+        assert claims["scheme"] == "exact"
+        assert claims["network"] == "aws:base"
+
+    def test_follow_the_requirements_not_a_constant(self) -> None:
+        signer = _RecordingSigner()
+        enhance_payment_requirements(_requirements(network="aws:other"), signer)
+        assert signer.signed[0]["network"] == "aws:other"
+
+    def test_signed_right_after_the_price(self) -> None:
+        signer = _RecordingSigner()
+        enhance_payment_requirements(_requirements(), signer)
+        names = list(signer.signed[0])
+        assert names[names.index("price") + 1 : names.index("price") + 3] == ["scheme", "network"]
+
+    @pytest.mark.parametrize("value", [None, "", 42, "upto"])
+    def test_scheme_other_than_exact_raises(self, value: Any) -> None:
+        with pytest.raises(ValidationError, match="Quote scheme must be 'exact'"):
+            enhance_payment_requirements(_requirements(scheme=value), _RecordingSigner())
+
+    @pytest.mark.parametrize("value", [None, "", 42])
+    def test_missing_network_raises(self, value: Any) -> None:
+        with pytest.raises(ValidationError, match="Quote network must be a non-empty string"):
+            enhance_payment_requirements(_requirements(network=value), _RecordingSigner())
+
+
 class TestProductId:
     def test_settlement_product_id_is_pay_to(self) -> None:
         signer = _RecordingSigner()

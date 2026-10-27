@@ -50,6 +50,8 @@ decimal fiat amount, not atomic units.
 | `iat`, `exp` | Issue time and expiry (`maxTimeoutSeconds`, default 300) |
 | `jti` | Unique id |
 | `price` | `{"amount": "0.01", "currency": "USD"}` (at most 8 decimal places) |
+| `scheme` | The route's scheme, `exact`; required |
+| `network` | The route's network, for example `aws:base`; required |
 | `payTo` | The seller's AWS Marketplace product ID (route `pay_to`) |
 | `settlement` | `extra.settlement` plus `product_id` (the route `pay_to`); required by the payment service |
 | `reference` | `extra.reference`, default `RESOURCE` |
@@ -92,13 +94,15 @@ The facilitator (`AgenticCommerceVerifier`) checks that:
    and carries a `payment_id`;
 3. the quote is signed by the seller's configured key;
 4. the payment token's `aud` is the quote's `iss`, and the quote has not expired;
-5. the quote's price equals the route's amount and currency, and its `iss`,
-   `aud`, `payTo`, `settlement` and `reference` equal those of the route's
-   current quote.
+5. the quote's price equals the route's amount and currency, its `scheme` and
+   `network`, which are required, equal the route's, and its `iss`, `aud`,
+   `payTo`, `settlement`, `reference`, `scheme` and `network` equal those of the
+   route's current quote, which the route's requirements must carry.
 
 Failures return `invalid_payment`, `payment_expired`, `invalid_quote` or
 `quote_expired`; DPoP failures abort with `dpop_required` or `dpop_invalid`.
 
 Settling is a no-op and nothing records the payment, so the same payment is
-accepted again until it expires. The seller records each `payment_id` to accept
-it once; see [security.md](security.md#payment-replay).
+accepted again until it expires. The seller records the `payment_id` claim of
+the verified payment token, not a buyer-sent `paymentId`, to accept it once; see
+[security.md](security.md#payment-replay).

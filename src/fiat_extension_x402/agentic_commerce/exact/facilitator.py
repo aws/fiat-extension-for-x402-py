@@ -74,10 +74,19 @@ class ExactAgenticCommerceScheme:
                 invalid_reason="invalid_payment",
                 invalid_message="Missing paymentToken in payment payload",
             )
+        route_quote_token = _route_quote_token(requirements)
+        if route_quote_token is None:
+            # Without the route's own quote the buyer's quote cannot be bound to
+            # this route, so the payment is refused rather than checked less.
+            return VerifyResponse(
+                is_valid=False,
+                invalid_reason="invalid_quote",
+                invalid_message="Missing quoteToken in the route's payment requirements",
+            )
         result = self._verifier.verify(
             payment_token,
             _wire_requirements(payload, requirements),
-            route_quote_token=_route_quote_token(requirements),
+            route_quote_token=route_quote_token,
         )
         return VerifyResponse(
             is_valid=result.is_valid,
@@ -122,8 +131,9 @@ def _wire_requirements(payload: _AnyPayload, requirements: _AnyRequirements) -> 
     core matches those against the server's while ignoring the quote token
     (signed afresh for every 402), so the server's copy holds a newer quote than
     the one the buyer paid for. The quote is signed by the seller, which the
-    verifier checks. v1 payloads have no ``accepted`` and v1 requirements name
-    the amount ``maxAmountRequired``.
+    verifier checks. Scheme and network come from ``requirements`` too, and the
+    quote must carry the same. v1 payloads have no ``accepted`` and v1
+    requirements name the amount ``maxAmountRequired``.
     """
     amount = getattr(requirements, "amount", None)
     if amount is None:
@@ -131,7 +141,14 @@ def _wire_requirements(payload: _AnyPayload, requirements: _AnyRequirements) -> 
     accepted = getattr(payload, "accepted", None)
     quote_source = accepted if accepted is not None else requirements
     quote_token = (getattr(quote_source, "extra", None) or {}).get("quoteToken")
-    return {"amount": amount, "asset": requirements.asset, "extra": {"quoteToken": quote_token}}
+    network = getattr(requirements, "network", None)
+    return {
+        "scheme": getattr(requirements, "scheme", None),
+        "network": None if network is None else str(network),
+        "amount": amount,
+        "asset": requirements.asset,
+        "extra": {"quoteToken": quote_token},
+    }
 
 
 def _route_quote_token(requirements: _AnyRequirements) -> str | None:

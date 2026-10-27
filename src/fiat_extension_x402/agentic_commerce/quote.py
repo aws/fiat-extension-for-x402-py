@@ -12,6 +12,7 @@ from typing import Any
 from fiat_extension_x402.constants import (
     DEFAULT_QUOTE_VALIDITY_SECONDS,
     QUOTE_TOKEN_AUDIENCE,
+    SCHEME_EXACT,
     SENTINEL_PAY_TO,
 )
 from fiat_extension_x402.exceptions import ValidationError
@@ -68,6 +69,15 @@ def _check_asset_amount(amount: object, asset: object) -> tuple[str, str]:
     return amount, asset
 
 
+def _check_scheme_network(scheme: object, network: object) -> tuple[str, str]:
+    """The requirements' scheme and network, which every quote must carry."""
+    if scheme != SCHEME_EXACT:
+        raise ValidationError(f"Quote scheme must be {SCHEME_EXACT!r}, got {scheme!r}")
+    if not isinstance(network, str) or not network:
+        raise ValidationError(f"Quote network must be a non-empty string, got {network!r}")
+    return SCHEME_EXACT, network
+
+
 def enhance_payment_requirements(
     payment_requirements: dict[str, Any],
     signer: QuoteSigner,
@@ -79,6 +89,11 @@ def enhance_payment_requirements(
     requires to settle the payment against the listing. Other ``settlement``
     fields can be supplied in ``extra.settlement``.
 
+    The requirements' ``scheme`` and ``network`` are signed into the quote as
+    claims of the same names, so the payment service, which sees only the quote,
+    can check what kind of payment the seller priced. Both are required, and the
+    scheme must be ``exact``.
+
     The returned requirements carry the sentinel ``payTo`` and a
     ``maxTimeoutSeconds`` equal to the quote's validity: the signed quote is the
     authoritative source for both.
@@ -87,8 +102,9 @@ def enhance_payment_requirements(
     :param signer: Signer for the quote token. Its service URL becomes ``iss``.
     :returns: Enhanced payment requirements.
     :raises ValidationError: if the signer's service URL or ``payTo`` is empty, the
-        amount or asset is not one ``parse_price`` returns, or
-        ``extra.settlement.product_id`` disagrees with ``payTo``.
+        amount or asset is not one ``parse_price`` returns, the scheme is not
+        ``exact``, the network is missing, or ``extra.settlement.product_id``
+        disagrees with ``payTo``.
     """
     issuer = signer.get_service_url()
     if not issuer or not issuer.strip():
@@ -102,6 +118,10 @@ def enhance_payment_requirements(
     # parse_price.
     amount, asset = _check_asset_amount(
         payment_requirements.get("amount"), payment_requirements.get("asset")
+    )
+
+    scheme, network = _check_scheme_network(
+        payment_requirements.get("scheme"), payment_requirements.get("network")
     )
 
     product_id = str(payment_requirements.get("payTo") or "").strip()
@@ -127,6 +147,8 @@ def enhance_payment_requirements(
             "amount": amount,
             "currency": asset[len(_ASSET_PREFIX) :],
         },
+        "scheme": scheme,
+        "network": network,
         "payTo": product_id,
         "reference": extra.get("reference") or "RESOURCE",
         "settlement": settlement,

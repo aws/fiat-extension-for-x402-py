@@ -29,6 +29,11 @@ What the seller must do:
   `transaction` of the settle response and the `PAYMENT-RESPONSE` header).
   Record it with an atomic check-and-set (for example a DynamoDB conditional
   put, or Redis `SET NX`) and refuse the request when it was already recorded.
+- **Take the id from the verified payment token only.** Use the `payment_id`
+  claim of the payment token the facilitator verified (`payload["paymentToken"]`).
+  Never key on a `paymentId` the buyer sends anywhere else in the payment
+  payload: the buyer sets it and the SDK does not check it, so a replay with a
+  new value there passes the check.
 - **Share the store** across every instance of the seller. A store per process
   rejects replays to that process only.
 - **Keep each id** until `max(payment token exp, quote exp)` plus your clock
@@ -43,7 +48,9 @@ from x402.schemas import AbortResult
 
 
 def accept_each_payment_once(context):
-    token = context.payment_payload.payload["paymentToken"]  # verified by now
+    # The payment token the facilitator verified; never payload["paymentId"],
+    # which the buyer sets.
+    token = context.payment_payload.payload["paymentToken"]
     claims = jwt.decode(token, options={"verify_signature": False})
     quote = jwt.decode(claims["quote_token"], options={"verify_signature": False})
     expires_at = max(claims["exp"], quote["exp"]) + 60
@@ -86,9 +93,10 @@ A payment token is accepted only when it is signed by the payment service, has
 the expected issuer, a key id and a `payment_id`, has not expired, embeds exactly
 the quote the buyer accepted, and that quote is signed by the seller's
 configured key, addressed to the seller (`aud`), unexpired, at the route's price
-and currency, and for the route: the `exact` facilitator scheme requires its
-`iss`, `aud`, `payTo` (the product ID), `settlement` and `reference` to equal
-those of the quote the seller signs for the route now. Every failure rejects
+and currency, for the route's scheme and network (both required), and for the
+route: the `exact` facilitator scheme requires its `iss`, `aud`,
+`payTo` (the product ID), `settlement`, `reference`, `scheme` and `network` to
+equal those of the quote the seller signs for the route now. Every failure rejects
 the payment; nothing fails open.
 
 - The token's algorithm, key id, issuer, expiry and quote are checked before

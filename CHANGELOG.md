@@ -3,7 +3,23 @@
 All notable changes to this project are documented here. The project follows
 [semantic versioning](https://semver.org).
 
-## Unreleased
+## 1.0.1
+
+This release removes helpers left over from the private beta. Nothing on the
+generally available path used them.
+
+### Added
+
+- Quotes carry the route's `scheme` and `network` as claims, right after
+  `price`, so the payment service, which sees only the quote, can check what
+  kind of payment the seller priced. Both are required:
+  - signing a quote raises `ValidationError` unless the scheme is `exact` and
+    the network is a non-empty string;
+  - `AgenticCommerceVerifier.verify` requires `scheme` and `network` in the
+    requirements (`invalid_quote`, "Missing scheme in payment requirements"),
+    and refuses a quote without them or with others (`invalid_quote`, "Quote
+    is for a different scheme or network"). A caller of `verify` must pass
+    both; the `exact` facilitator scheme does.
 
 ### Removed
 
@@ -28,10 +44,13 @@ All notable changes to this project are documented here. The project follows
   naming an unknown key refetches it at most every 30 seconds, concurrent
   verifications share one fetch, and JWKS responses over 64 KiB are refused.
 - The `exact` facilitator scheme requires the paid quote to match the route's
-  current quote on `iss`, `aud`, `payTo`, `settlement` and `reference`, so a
-  quote for another route, product or service sharing the signing key is
-  refused. `AgenticCommerceVerifier.verify` takes the route's quote as
-  `route_quote_token`.
+  current quote on `iss`, `aud`, `payTo`, `settlement`, `reference`, `scheme`
+  and `network`, so a quote for another route, product or service sharing the
+  signing key is refused. Requirements without the route's quote are refused
+  (`invalid_quote`). `AgenticCommerceVerifier.verify` takes the route's quote
+  as `route_quote_token`.
+- A quote token containing a lone surrogate is refused (`invalid_quote`)
+  instead of raising.
 - `docs/security.md` documents that verification is stateless and that sellers
   must record each `payment_id` to accept a payment once.
 

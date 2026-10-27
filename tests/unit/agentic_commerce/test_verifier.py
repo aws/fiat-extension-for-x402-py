@@ -127,15 +127,23 @@ def _quote_claims(**overrides: Any) -> dict[str, Any]:
         "exp": now + 300,
         "jti": "quote-1",
         "price": {"amount": "0.10", "currency": "USD"},
+        "scheme": "exact",
+        "network": "aws:base",
         "payTo": "seller-1",
         "reference": "RESOURCE",
     }
     claims.update(overrides)
-    return claims
+    return {name: value for name, value in claims.items() if value is not None}
 
 
 def _raw_requirements(quote_token: str) -> dict[str, Any]:
-    return {"amount": "0.10", "asset": "iso4217:USD", "extra": {"quoteToken": quote_token}}
+    return {
+        "scheme": "exact",
+        "network": "aws:base",
+        "amount": "0.10",
+        "asset": "iso4217:USD",
+        "extra": {"quoteToken": quote_token},
+    }
 
 
 def _assert_invalid(result: VerificationResult, reason: str, message: str) -> None:
@@ -1004,3 +1012,68 @@ class TestRouteQuote:
         token = service.issue(requirements["extra"]["quoteToken"])
         result = _static(signer).verify(token, requirements, route_quote_token="not-a-jwt")
         _assert_invalid(result, "invalid_quote", "Route quote token is malformed")
+
+    def test_another_network(self, service: FakePaymentService) -> None:
+        signer = seller_signer()
+        paid = _requirements(signer, network="aws:other")
+        route_quote = _requirements(signer)["extra"]["quoteToken"]
+        token = service.issue(paid["extra"]["quoteToken"])
+        result = _static(signer).verify(token, paid, route_quote_token=route_quote)
+        _assert_invalid(result, "invalid_quote", "Quote does not match this route")
+
+
+class TestSchemeAndNetwork:
+    """A quote carrying a scheme or network must be paid under that scheme and network."""
+
+    def test_matching_requirements_are_valid(self, service: FakePaymentService) -> None:
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        token = service.issue(requirements["extra"]["quoteToken"])
+        assert _static(signer).verify(token, requirements).is_valid is True
+
+    @pytest.mark.parametrize(("name", "value"), [("scheme", "upto"), ("network", "aws:other")])
+    def test_mismatch_is_refused(self, service: FakePaymentService, name: str, value: str) -> None:
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        token = service.issue(requirements["extra"]["quoteToken"])
+        result = _static(signer).verify(token, {**requirements, name: value})
+        _assert_invalid(result, "invalid_quote", "Quote is for a different scheme or network")
+
+    @pytest.mark.parametrize("name", ["scheme", "network"])
+    @pytest.mark.parametrize("value", [None, "", 42])
+    def test_requirements_without_them_refuse_every_quote(
+        self, service: FakePaymentService, name: str, value: Any
+    ) -> None:
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        token = service.issue(requirements["extra"]["quoteToken"])
+        result = _static(signer).verify(token, {**requirements, name: value})
+        _assert_invalid(result, "invalid_quote", f"Missing {name} in payment requirements")
+
+    @pytest.mark.parametrize("name", ["scheme", "network"])
+    def test_quote_without_them_is_refused(self, service: FakePaymentService, name: str) -> None:
+        signer = seller_signer()
+        quote = signer.sign_quote(_quote_claims(**{name: None}))
+        result = _static(signer).verify(service.issue(quote), _raw_requirements(quote))
+        _assert_invalid(result, "invalid_quote", "Quote is for a different scheme or network")
+
+    @pytest.mark.parametrize("name", ["scheme", "network"])
+    def test_route_quote_without_them_is_refused(
+        self, service: FakePaymentService, name: str
+    ) -> None:
+        signer = seller_signer()
+        quote = signer.sign_quote(_quote_claims())
+        route_quote = signer.sign_quote(_quote_claims(**{name: None}))
+        result = _static(signer).verify(
+            service.issue(quote), _raw_requirements(quote), route_quote_token=route_quote
+        )
+        _assert_invalid(result, "invalid_quote", "Quote does not match this route")
+
+    def test_surrogate_in_the_quote_is_refused_not_raised(
+        self, service: FakePaymentService
+    ) -> None:
+        signer = seller_signer()
+        requirements = _requirements(signer)
+        token = service.issue(requirements["extra"]["quoteToken"])
+        result = _static(signer).verify(token, {**requirements, "extra": {"quoteToken": "\ud800"}})
+        _assert_invalid(result, "invalid_quote", "Payment token was issued for a different quote")

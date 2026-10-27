@@ -239,6 +239,9 @@ Set each route's `pay_to` to the seller's **AWS Marketplace product ID**. The
 server scheme signs it into the quote as `payTo` and as `settlement.product_id`,
 which the payment service requires to settle against the listing. On the wire,
 `payTo` is replaced by a placeholder; the signed quote carries the real value.
+The route's `scheme` (`exact`) and `network` are signed into the quote too, and
+are required, so the payment service, which sees only the quote, can check what
+kind of payment was priced.
 
 Other quote details come from the route's `extra`:
 
@@ -279,7 +282,8 @@ always configured, never discovered from the token:
 - `jwks_request_headers`: extra headers for that request.
 
 The service's keys are cached for 60 seconds. The verifier keeps no record of
-accepted payments; see [Payment replay](docs/security.md#payment-replay).
+accepted payments: record the `payment_id` claim of each verified payment token
+(never a buyer-sent `paymentId`); see [Payment replay](docs/security.md#payment-replay).
 
 ### DPoP
 
@@ -360,7 +364,9 @@ uv run mypy --strict src tests
 ## Security
 
 Verification is stateless: a payment is accepted again until it expires unless
-the seller records each `payment_id` in a store shared by all its instances.
+the seller records the `payment_id` claim of each verified payment token in a
+store shared by all its instances. Never key on a `paymentId` the buyer sends in
+the payment payload: the buyer sets it and nothing checks it.
 Read [docs/security.md](docs/security.md) before going to production. To report
 a vulnerability, see [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications).
 

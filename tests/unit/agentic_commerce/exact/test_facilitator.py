@@ -171,6 +171,7 @@ class TestVerify:
     ) -> None:
         offer = _offer(signer)
         v1_requirements = SimpleNamespace(
+            scheme="exact",
             max_amount_required="0.10",
             asset="iso4217:USD",
             network="aws:base",
@@ -272,3 +273,75 @@ class TestRouteBinding:
         assert result.is_valid is False
         assert result.invalid_reason == "invalid_quote"
         assert result.invalid_message == "Quote does not match this route"
+
+    def test_quote_for_another_network_is_refused(
+        self,
+        service: FakePaymentService,
+        signer: LocalQuoteSigner,
+        scheme: ExactAgenticCommerceFacilitatorScheme,
+    ) -> None:
+        """The route's scheme and network reach the verifier, which checks the quote's."""
+        route = _offer(signer)
+        other = PaymentRequirements(
+            scheme="exact",
+            network="aws:other",
+            asset="iso4217:USD",
+            amount="0.10",
+            pay_to="seller-1",
+            max_timeout_seconds=300,
+        )
+        accepted = ExactAgenticCommerceServerScheme(signer=signer).enhance_payment_requirements(
+            other
+        )
+        token = service.issue(_quote(accepted))
+        result = scheme.verify(_payload(accepted, {"paymentToken": token}), route)
+        assert result.is_valid is False
+        assert result.invalid_reason == "invalid_quote"
+        assert result.invalid_message == "Quote is for a different scheme or network"
+
+    def test_route_without_its_own_quote_is_refused(
+        self,
+        service: FakePaymentService,
+        signer: LocalQuoteSigner,
+        scheme: ExactAgenticCommerceFacilitatorScheme,
+    ) -> None:
+        """Without the route's quote the buyer's quote cannot be bound, so it is refused."""
+        accepted = _offer(signer)
+        route = accepted.model_copy(update={"extra": {}})
+        token = service.issue(_quote(accepted))
+        result = scheme.verify(_payload(accepted, {"paymentToken": token}), route)
+        assert result.is_valid is False
+        assert result.invalid_reason == "invalid_quote"
+        assert result.invalid_message == "Missing quoteToken in the route's payment requirements"
+
+    @pytest.mark.parametrize("name", ["scheme", "network"])
+    def test_quote_without_scheme_or_network_is_refused(
+        self,
+        service: FakePaymentService,
+        signer: LocalQuoteSigner,
+        scheme: ExactAgenticCommerceFacilitatorScheme,
+        name: str,
+    ) -> None:
+        """A quote signed without the claims is refused, though otherwise for this route."""
+        route = _offer(signer)
+        claims = jwt.decode(_quote(route), options={"verify_signature": False})
+        del claims[name]
+        legacy = signer.sign_quote(claims)
+        accepted = route.model_copy(update={"extra": {**route.extra, "quoteToken": legacy}})
+        result = scheme.verify(_payload(accepted, {"paymentToken": service.issue(legacy)}), route)
+        assert result.is_valid is False
+        assert result.invalid_reason == "invalid_quote"
+        assert result.invalid_message == "Quote is for a different scheme or network"
+
+    def test_surrogate_in_the_accepted_quote_is_refused_not_raised(
+        self,
+        service: FakePaymentService,
+        signer: LocalQuoteSigner,
+        scheme: ExactAgenticCommerceFacilitatorScheme,
+    ) -> None:
+        route = _offer(signer)
+        accepted = route.model_copy(update={"extra": {**route.extra, "quoteToken": "\ud800"}})
+        token = service.issue(_quote(route))
+        result = scheme.verify(_payload(accepted, {"paymentToken": token}), route)
+        assert result.is_valid is False
+        assert result.invalid_reason == "invalid_quote"
