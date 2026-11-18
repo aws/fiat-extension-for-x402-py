@@ -7,7 +7,7 @@ server and :class:`ExactAgenticCommerceFacilitatorScheme` on an x402
 facilitator, then protect routes with x402's own HTTP middleware.
 """
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 from fiat_extension_x402.agentic_commerce import (
     AgenticCommerceVerifier,
