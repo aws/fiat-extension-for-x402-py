@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. The project follows
 [semantic versioning](https://semver.org).
 
+## 1.0.2
+
+No change to the SDK's code: a dependency update only.
+
+### Security
+
+- Requires PyJWT 2.15.0 or later (was 2.14.0). PyJWT 2.14.0 raises
+  `RecursionError` for a token with a deeply nested payload before its
+  signature is checked
+  ([CVE-2026-101918](https://github.com/advisories/GHSA-42vr-xj54-vc7v)), and
+  accepts an OKP JWK whose public and private parts do not match
+  ([CVE-2026-102275](https://github.com/advisories/GHSA-x33g-cr3x-6449)). An
+  environment that already has PyJWT 2.15.0 or later is unaffected.
+
 ## 1.0.1
 
 This release removes helpers left over from the private beta. Nothing on the
