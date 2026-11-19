@@ -113,6 +113,34 @@ payment_middleware(app, routes, server)
 
 Runnable versions of both, plus a Lambda deployment, are in [examples/](examples/).
 
+## Set up with an AI coding agent
+
+The [AWS Marketplace Agentic Commerce skill](https://github.com/aws/agent-toolkit-for-aws/blob/main/skills/specialized-skills/aws-marketplace-skills/aws-marketplace-agentic-commerce/SKILL.md)
+in the [Agent Toolkit for AWS](https://github.com/aws/agent-toolkit-for-aws)
+takes a coding agent (Claude Code, Codex, Cursor, Kiro and others) through the
+integration this README describes. The agent reads your current x402 setup, adds
+the `exact` scheme on `aws:base` next to the networks your routes already
+accept, configures the signer and verifier for your listing's key, applies the
+production settings (payment and DPoP replay, `HEAD`, the public URL, IAM), and
+confirms the result with one unpaid request to a deployed route. It covers
+FastAPI and Flask.
+
+Install the skill in your project:
+
+```bash
+npx skills add aws/agent-toolkit-for-aws/skills --skill aws-marketplace-agentic-commerce
+```
+
+An agent connected to the
+[AWS MCP Server](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html)
+loads the skill from it, with nothing to install. Then ask the agent, for
+example, to "add AWS Marketplace payments to my x402 routes".
+
+The skill starts from an existing Agentic Commerce listing: have its product ID,
+its endpoint URL and its quote-signing key (a KMS key or a JWKS URL) to hand. It
+creates neither the listing nor the key, and it installs version 1.0.1 or later
+of this package.
+
 ## Quote signing
 
 The seller signs every quote with its own key. The listing is registered with
@@ -333,6 +361,10 @@ A rejected payment gets another `402`. The reason is in the response's
 | `quote_expired` | The quote has expired |
 | `dpop_required` | The payment token is bound to a key but the request has no valid `DPoP` header |
 | `dpop_invalid` | The `DPoP` proof does not match the key, method, URL or token, is too old, or was replayed |
+
+For the usual seller-side cause of each reason, and of startup errors, see the
+skill's
+[troubleshooting reference](https://github.com/aws/agent-toolkit-for-aws/blob/main/skills/specialized-skills/aws-marketplace-skills/aws-marketplace-agentic-commerce/references/troubleshooting.md).
 
 ## Running the facilitator separately
 
